@@ -21,6 +21,19 @@ class StateDB:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_state (
+                order_id INTEGER PRIMARY KEY,
+                article TEXT NOT NULL DEFAULT '',
+                nm_id INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                supply_id TEXT,
+                first_seen_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
     def get(self, source: str, nm_id: int) -> int | None:
@@ -50,6 +63,47 @@ class StateDB:
                     (source, nm_id, int(new_qty), now),
                 )
         return transitions
+
+    def get_order_state(self, order_id: int) -> tuple[str, str | None] | None:
+        row = self.conn.execute(
+            "SELECT status, supply_id FROM order_state WHERE order_id = ?",
+            (int(order_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row[0]), (None if row[1] is None else str(row[1]))
+
+    def remember_order(self, order_id: int, article: str, nm_id: int) -> bool:
+        """Remember a new order. Return True only when it was not seen before."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            cur = self.conn.execute(
+                """
+                INSERT OR IGNORE INTO order_state(
+                    order_id, article, nm_id, status, supply_id, first_seen_at, updated_at
+                ) VALUES (?, ?, ?, 'notified', NULL, ?, ?)
+                """,
+                (int(order_id), str(article), int(nm_id), now, now),
+            )
+        return cur.rowcount == 1
+
+    def set_order_action(
+        self, order_id: int, status: str, supply_id: str | None = None
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO order_state(
+                    order_id, article, nm_id, status, supply_id, first_seen_at, updated_at
+                ) VALUES (?, '', 0, ?, ?, ?, ?)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    status = excluded.status,
+                    supply_id = excluded.supply_id,
+                    updated_at = excluded.updated_at
+                """,
+                (int(order_id), str(status), supply_id, now, now),
+            )
 
     def close(self) -> None:
         self.conn.close()
