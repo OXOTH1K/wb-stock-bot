@@ -16,6 +16,7 @@ class Settings:
     fbs_check_interval: int
     wb_check_interval: int
     catalog_refresh_interval: int
+    order_check_interval: int
     stocks_page_size: int
     http_timeout: int
 
@@ -46,6 +47,7 @@ class Settings:
             fbs_check_interval=int(os.getenv("FBS_CHECK_INTERVAL", "300")),
             wb_check_interval=int(os.getenv("WB_CHECK_INTERVAL", "1800")),
             catalog_refresh_interval=int(os.getenv("CATALOG_REFRESH_INTERVAL", "21600")),
+            order_check_interval=int(os.getenv("ORDER_CHECK_INTERVAL", "30")),
             stocks_page_size=int(os.getenv("STOCKS_PAGE_SIZE", "30")),
             http_timeout=int(os.getenv("HTTP_TIMEOUT", "30")),
         )

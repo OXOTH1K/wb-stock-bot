@@ -6,6 +6,7 @@ import signal
 
 from .config import Settings
 from .db import StateDB
+from .orders import OrderMonitor
 from .service import StockMonitorService
 from .telegram import TelegramBot
 from .wb_client import WildberriesClient
@@ -27,15 +28,28 @@ async def amain() -> None:
         ) as tg:
             service = StockMonitorService(settings, wb, tg, db)
             await service.initialize()
+            if service.warehouse is None:
+                raise RuntimeError("Seller warehouse is not initialized")
+
+            orders = OrderMonitor(settings, wb, tg, db, service.warehouse.id)
+            await orders.refresh()
+
+            async def callback_handler(
+                chat_id: int, message_id: int, data: str, message_text: str = ""
+            ) -> None:
+                if await orders.handle_callback(chat_id, message_id, data, message_text):
+                    return
+                await service.handle_callback(chat_id, message_id, data, message_text)
 
             tasks = [
                 asyncio.create_task(
-                    tg.polling_loop(service.handle_message, service.handle_callback),
+                    tg.polling_loop(service.handle_message, callback_handler),
                     name="telegram",
                 ),
                 asyncio.create_task(service.fbs_loop(), name="fbs-monitor"),
                 asyncio.create_task(service.wb_loop(), name="wb-monitor"),
                 asyncio.create_task(service.catalog_loop(), name="catalog-refresh"),
+                asyncio.create_task(orders.loop(), name="fbs-orders"),
             ]
 
             stop_event = asyncio.Event()
