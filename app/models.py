@@ -27,6 +27,31 @@ class SellerWarehouse:
     name: str
 
 
+@dataclass(frozen=True)
+class FBSOrder:
+    id: int
+    article: str
+    nm_id: int
+    chrt_id: int
+    warehouse_id: int
+    office_id: int
+    created_at: str
+    cargo_type: int
+    cross_border_type: int
+    offices: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FBSSupply:
+    id: str
+    name: str
+    done: bool
+    cargo_type: int
+    cross_border_type: int
+    created_at: str = ""
+    destination_office_id: int | None = None
+
+
 def build_products(sizes: Iterable[ProductSize]) -> dict[int, Product]:
     grouped: dict[int, dict] = {}
     for size in sizes:
