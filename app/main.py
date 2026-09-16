@@ -36,6 +36,7 @@ async def amain() -> None:
                 asyncio.create_task(service.fbs_loop(), name="fbs-monitor"),
                 asyncio.create_task(service.wb_loop(), name="wb-monitor"),
                 asyncio.create_task(service.catalog_loop(), name="catalog-refresh"),
+                asyncio.create_task(service.orders_loop(), name="fbs-orders"),
             ]
 
             stop_event = asyncio.Event()
