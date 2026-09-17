@@ -6,7 +6,7 @@ import signal
 
 from .config import Settings
 from .db import StateDB
-from .orders import OrderMonitor
+from .orders_fixed import OrderMonitor
 from .service import StockMonitorService
 from .telegram import TelegramBot
 from .wb_client import WildberriesClient
