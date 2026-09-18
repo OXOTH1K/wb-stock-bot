@@ -101,6 +101,7 @@ class FakeTelegram:
 class FakeDB:
     def __init__(self, previous=None):
         self.state = dict(previous or {})
+        self.saved = {}
 
     def update_many(self, source, quantities):
         transitions = []
@@ -111,6 +112,40 @@ class FakeDB:
                 transitions.append((nm_id, old_qty, new_qty))
             self.state[key] = new_qty
         return transitions
+
+    def save_product_fbs(self, scope, nm_id, quantities):
+        for key in [k for k in self.saved if k[0] == scope and k[1] == nm_id]:
+            del self.saved[key]
+        for chrt_id, quantity in quantities.items():
+            self.saved[(scope, nm_id, chrt_id)] = int(quantity)
+
+    def get_saved_product_fbs(self, scope, nm_id):
+        return {
+            chrt_id: qty
+            for (saved_scope, saved_nm, chrt_id), qty in self.saved.items()
+            if saved_scope == scope and saved_nm == nm_id
+        }
+
+    def clear_saved_product_fbs(self, scope, nm_id):
+        for key in [k for k in self.saved if k[0] == scope and k[1] == nm_id]:
+            del self.saved[key]
+
+    def replace_saved_fbs(self, scope, rows):
+        for key in [k for k in self.saved if k[0] == scope]:
+            del self.saved[key]
+        for (nm_id, chrt_id), quantity in rows.items():
+            self.saved[(scope, nm_id, chrt_id)] = int(quantity)
+
+    def get_saved_fbs(self, scope):
+        return {
+            (nm_id, chrt_id): qty
+            for (saved_scope, nm_id, chrt_id), qty in self.saved.items()
+            if saved_scope == scope
+        }
+
+    def clear_saved_fbs(self, scope):
+        for key in [k for k in self.saved if k[0] == scope]:
+            del self.saved[key]
 
 
 class NotificationTests(unittest.IsolatedAsyncioTestCase):

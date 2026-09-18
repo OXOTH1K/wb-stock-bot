@@ -21,6 +21,18 @@ class StateDB:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fbs_saved_stock (
+                scope TEXT NOT NULL,
+                nm_id INTEGER NOT NULL,
+                chrt_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (scope, nm_id, chrt_id)
+            )
+            """
+        )
         self.conn.commit()
 
     def get(self, source: str, nm_id: int) -> int | None:
@@ -50,6 +62,88 @@ class StateDB:
                     (source, nm_id, int(new_qty), now),
                 )
         return transitions
+
+    def replace_saved_fbs(
+        self, scope: str, rows: dict[tuple[int, int], int]
+    ) -> None:
+        """Replace one saved FBS snapshot.
+
+        rows maps (nm_id, chrt_id) to absolute quantity.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute("DELETE FROM fbs_saved_stock WHERE scope = ?", (scope,))
+            self.conn.executemany(
+                """
+                INSERT INTO fbs_saved_stock(scope, nm_id, chrt_id, quantity, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (scope, int(nm_id), int(chrt_id), int(quantity), now)
+                    for (nm_id, chrt_id), quantity in rows.items()
+                ],
+            )
+
+    def save_product_fbs(
+        self, scope: str, nm_id: int, quantities: dict[int, int]
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM fbs_saved_stock WHERE scope = ? AND nm_id = ?",
+                (scope, int(nm_id)),
+            )
+            self.conn.executemany(
+                """
+                INSERT INTO fbs_saved_stock(scope, nm_id, chrt_id, quantity, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (scope, int(nm_id), int(chrt_id), int(quantity), now)
+                    for chrt_id, quantity in quantities.items()
+                ],
+            )
+
+    def get_saved_product_fbs(self, scope: str, nm_id: int) -> dict[int, int]:
+        rows = self.conn.execute(
+            """
+            SELECT chrt_id, quantity
+            FROM fbs_saved_stock
+            WHERE scope = ? AND nm_id = ?
+            ORDER BY chrt_id
+            """,
+            (scope, int(nm_id)),
+        ).fetchall()
+        return {int(chrt_id): int(quantity) for chrt_id, quantity in rows}
+
+    def get_saved_fbs(self, scope: str) -> dict[tuple[int, int], int]:
+        rows = self.conn.execute(
+            """
+            SELECT nm_id, chrt_id, quantity
+            FROM fbs_saved_stock
+            WHERE scope = ?
+            ORDER BY nm_id, chrt_id
+            """,
+            (scope,),
+        ).fetchall()
+        return {
+            (int(nm_id), int(chrt_id)): int(quantity)
+            for nm_id, chrt_id, quantity in rows
+        }
+
+    def clear_saved_product_fbs(self, scope: str, nm_id: int) -> None:
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM fbs_saved_stock WHERE scope = ? AND nm_id = ?",
+                (scope, int(nm_id)),
+            )
+
+    def clear_saved_fbs(self, scope: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM fbs_saved_stock WHERE scope = ?",
+                (scope,),
+            )
 
     def close(self) -> None:
         self.conn.close()

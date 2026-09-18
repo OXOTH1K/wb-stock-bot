@@ -66,7 +66,7 @@ class StockMonitorService:
                 f"Товаров: {len(self.products)}\n"
                 f"С нулём на FBS: {zeros_fbs}\n"
                 f"С нулём на складах WB: {zeros_wb}\n\n"
-                "Команды: /stocks, /zero, /status"
+                "Команды: /stocks, /zero, /status, /fbs_zero_all, /fbs_restore"
             ),
         )
 
@@ -135,16 +135,31 @@ class StockMonitorService:
                 continue
 
             product = self.products.get(nm_id)
-            await self.tg.broadcast(
-                self.settings.telegram_chat_ids,
-                (
+            saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
+            saved_total = sum(saved.values())
+            if saved_total > 0:
+                text = (
+                    "🔴 Товар закончился на складе WB\n"
+                    f"Артикул продавца: {product.vendor_code if product else '—'}\n"
+                    "На вашем складе FBS: 0 шт.\n"
+                    "На складах WB: 0 шт.\n\n"
+                    f"Перед обнулением FBS было сохранено: {saved_total} шт.\n"
+                    "Вернуть сохранённый остаток на FBS?"
+                )
+                keyboard = self._saved_restore_keyboard(nm_id, saved_total)
+            else:
+                text = (
                     "🔴 Товар закончился везде\n"
                     f"Артикул продавца: {product.vendor_code if product else '—'}\n"
                     "На вашем складе: 0 шт.\n"
                     "На складах WB: 0 шт.\n\n"
                     "Добавить остаток на ваш FBS-склад?"
-                ),
-                reply_markup=self._depletion_action_keyboard(nm_id),
+                )
+                keyboard = self._depletion_action_keyboard(nm_id)
+            await self.tg.broadcast(
+                self.settings.telegram_chat_ids,
+                text,
+                reply_markup=keyboard,
             )
 
     async def _notify_wb_appearances(
@@ -186,6 +201,8 @@ class StockMonitorService:
                     "/stocks 2 — открыть конкретную страницу\n"
                     "/stock <артикул продавца> — найти товар\n"
                     "/zero — товары с нулевым остатком\n"
+                    "/fbs_zero_all — сохранить и обнулить весь FBS\n"
+                    "/fbs_restore — вернуть последний массовый снимок FBS\n"
                     "/status — состояние сервиса"
                 ),
             )
@@ -223,12 +240,47 @@ class StockMonitorService:
                     return
                 await self.refresh_for_command()
                 await self.tg.send_message(chat_id, self._format_search(" ".join(args)))
+            elif command == "/fbs_zero_all":
+                await self.tg.send_message(
+                    chat_id,
+                    "⚠️ Обнулить остатки ВСЕХ товаров на FBS?\n"
+                    "Перед обнулением текущие количества будут сохранены.",
+                    reply_markup={
+                        "inline_keyboard": [[
+                            {"text": "Обнулить весь FBS", "callback_data": "fbsallzero:yes"},
+                            {"text": "Отмена", "callback_data": "fbsallzero:skip"},
+                        ]]
+                    },
+                )
+            elif command == "/fbs_restore":
+                saved = self.db.get_saved_fbs("mass")
+                saved_total = sum(saved.values())
+                if not saved:
+                    await self.tg.send_message(chat_id, "ℹ️ Сохранённого массового снимка FBS нет.")
+                else:
+                    await self.tg.send_message(
+                        chat_id,
+                        (
+                            f"♻️ В сохранённом снимке: {len(saved)} вариантов, "
+                            f"суммарно {saved_total} шт.\n"
+                            "Восстановить эти остатки на FBS?"
+                        ),
+                        reply_markup={
+                            "inline_keyboard": [[
+                                {"text": "Восстановить FBS", "callback_data": "fbsallrestore:yes"},
+                                {"text": "Отмена", "callback_data": "fbsallrestore:skip"},
+                            ]]
+                        },
+                    )
             elif command == "/status":
                 await self.tg.send_message(chat_id, self._format_status())
             else:
                 await self.tg.send_message(
                     chat_id,
-                    "Команды: /stocks, /stock <артикул продавца>, /zero, /status, /id",
+                    (
+                        "Команды: /stocks, /stock <артикул продавца>, /zero, "
+                        "/fbs_zero_all, /fbs_restore, /status, /id"
+                    ),
                 )
         except Exception as exc:
             log.exception("Command failed: %s", command)
@@ -310,6 +362,20 @@ class StockMonitorService:
             "inline_keyboard": [[
                 {"text": "Обнулить FBS", "callback_data": f"fbszero:{nm_id}:yes"},
                 {"text": "Не обнулять FBS", "callback_data": f"fbszero:{nm_id}:skip"},
+            ]]
+        }
+
+    def _saved_restore_keyboard(self, nm_id: int, quantity: int) -> dict:
+        return {
+            "inline_keyboard": [[
+                {
+                    "text": f"Вернуть {quantity} шт. на FBS",
+                    "callback_data": f"fbsrestore:{nm_id}:yes",
+                },
+                {
+                    "text": "Не возвращать",
+                    "callback_data": f"fbsrestore:{nm_id}:skip",
+                },
             ]]
         }
 
@@ -424,6 +490,8 @@ class StockMonitorService:
             )
             return
 
+        by_chrt = await self.wb.get_fbs_stocks(self.warehouse.id, product.chrt_ids)
+        self.db.save_product_fbs("wb_auto", nm_id, by_chrt)
         await self.wb.set_fbs_stocks(
             self.warehouse.id, {chrt_id: 0 for chrt_id in product.chrt_ids}
         )
@@ -436,12 +504,174 @@ class StockMonitorService:
         )
         await self._finish_action_message(chat_id, message_id, original_text, status)
 
+    async def _restore_saved_product(
+        self,
+        chat_id: int,
+        message_id: int,
+        original_text: str,
+        nm_id: int,
+    ) -> None:
+        if self.warehouse is None:
+            raise RuntimeError("Склад продавца не определён")
+        saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
+        if not saved:
+            await self._finish_action_message(
+                chat_id, message_id, original_text, "ℹ️ Сохранённого остатка для товара уже нет."
+            )
+            return
+        if self.wb_stock.get(nm_id, 0) > 0:
+            await self._finish_action_message(
+                chat_id,
+                message_id,
+                original_text,
+                "⚠️ Восстановление отменено: товар снова появился на складе WB.",
+            )
+            return
+        product = self.products.get(nm_id)
+        if product is None:
+            await self._finish_action_message(
+                chat_id, message_id, original_text, "⚠️ Товар больше не найден в каталоге."
+            )
+            return
+        current = await self.wb.get_fbs_stocks(self.warehouse.id, product.chrt_ids)
+        if any(int(qty) != 0 for qty in current.values()):
+            await self._finish_action_message(
+                chat_id,
+                message_id,
+                original_text,
+                "⚠️ FBS уже изменился после обнуления. Сохранённый остаток не перезаписан.",
+            )
+            return
+        await self.wb.set_fbs_stocks(self.warehouse.id, saved)
+        self.db.clear_saved_product_fbs("wb_auto", nm_id)
+        await self.refresh_fbs(notify=False)
+        total = sum(saved.values())
+        await self._finish_action_message(
+            chat_id,
+            message_id,
+            original_text,
+            f"✅ На FBS возвращён сохранённый остаток: {total} шт.",
+        )
+
+    async def _zero_all_fbs(self, chat_id: int, message_id: int, original_text: str) -> None:
+        if self.warehouse is None:
+            raise RuntimeError("Склад продавца не определён")
+        chrt_to_nm = {size.chrt_id: size.nm_id for size in self.sizes}
+        current = await self.wb.get_fbs_stocks(self.warehouse.id, chrt_to_nm)
+        if not any(int(qty) > 0 for qty in current.values()):
+            await self._finish_action_message(
+                chat_id,
+                message_id,
+                original_text,
+                "ℹ️ Все остатки FBS уже равны 0. Предыдущий сохранённый снимок не изменён.",
+            )
+            return
+        snapshot = {
+            (chrt_to_nm[chrt_id], chrt_id): int(qty)
+            for chrt_id, qty in current.items()
+        }
+        self.db.replace_saved_fbs("mass", snapshot)
+        await self.wb.set_fbs_stocks(
+            self.warehouse.id, {chrt_id: 0 for chrt_id in current}
+        )
+        # Массовое обнуление — более новое явное решение пользователя, поэтому
+        # старые индивидуальные автоснимки больше не должны предлагаться.
+        # Очищаем их только после успешной записи нулей в WB.
+        self.db.clear_saved_fbs("wb_auto")
+        await self.refresh_fbs(notify=False)
+        self.db.update_many(
+            "total",
+            {
+                nm_id: self.fbs_stock.get(nm_id, 0) + self.wb_stock.get(nm_id, 0)
+                for nm_id in self.products
+            },
+        )
+        await self._finish_action_message(
+            chat_id,
+            message_id,
+            original_text,
+            (
+                f"✅ Все остатки FBS обнулены.\n"
+                f"Сохранено вариантов: {len(snapshot)}, суммарно {sum(snapshot.values())} шт."
+            ),
+        )
+
+    async def _restore_all_fbs(
+        self, chat_id: int, message_id: int, original_text: str
+    ) -> None:
+        if self.warehouse is None:
+            raise RuntimeError("Склад продавца не определён")
+        snapshot = self.db.get_saved_fbs("mass")
+        if not snapshot:
+            await self._finish_action_message(
+                chat_id, message_id, original_text, "ℹ️ Сохранённого массового снимка FBS нет."
+            )
+            return
+        saved_by_chrt = {chrt_id: qty for (_, chrt_id), qty in snapshot.items()}
+        current = await self.wb.get_fbs_stocks(self.warehouse.id, saved_by_chrt)
+        if any(int(qty) != 0 for qty in current.values()):
+            await self._finish_action_message(
+                chat_id,
+                message_id,
+                original_text,
+                (
+                    "⚠️ Восстановление отменено: после обнуления FBS уже изменился. "
+                    "Сохранённый снимок оставлен без изменений."
+                ),
+            )
+            return
+        await self.wb.set_fbs_stocks(self.warehouse.id, saved_by_chrt)
+        self.db.clear_saved_fbs("mass")
+        await self.refresh_fbs(notify=False)
+        self.db.update_many(
+            "total",
+            {
+                nm_id: self.fbs_stock.get(nm_id, 0) + self.wb_stock.get(nm_id, 0)
+                for nm_id in self.products
+            },
+        )
+        await self._finish_action_message(
+            chat_id,
+            message_id,
+            original_text,
+            (
+                f"✅ Сохранённые остатки FBS восстановлены.\n"
+                f"Вариантов: {len(saved_by_chrt)}, суммарно {sum(saved_by_chrt.values())} шт."
+            ),
+        )
+
     async def handle_callback(
         self, chat_id: int, message_id: int, data: str, message_text: str = ""
     ) -> None:
         if chat_id not in self.settings.telegram_chat_ids:
             return
         if data in {"stocks:noop", "action:noop"}:
+            return
+
+        if data.startswith("fbsallzero:"):
+            try:
+                if data.endswith(":skip"):
+                    await self._finish_action_message(
+                        chat_id, message_id, message_text, "⏭ Массовое обнуление отменено."
+                    )
+                elif data.endswith(":yes"):
+                    await self._zero_all_fbs(chat_id, message_id, message_text)
+            except Exception as exc:
+                log.exception("Mass FBS zero failed")
+                await self.tg.send_message(chat_id, f"⚠️ Не удалось обнулить весь FBS: {exc}")
+            return
+
+        if data.startswith("fbsallrestore:"):
+            try:
+                if data.endswith(":skip"):
+                    await self._finish_action_message(
+                        chat_id, message_id, message_text, "⏭ Восстановление FBS отменено."
+                    )
+                elif data.endswith(":yes"):
+                    await self._restore_all_fbs(chat_id, message_id, message_text)
+            except Exception as exc:
+                log.exception("Mass FBS restore failed")
+                await self.tg.send_message(chat_id, f"⚠️ Не удалось восстановить FBS: {exc}")
             return
 
         if data.startswith("stocks:"):
@@ -494,6 +724,23 @@ class StockMonitorService:
                 if choice != "yes":
                     return
                 await self._zero_fbs_from_alert(chat_id, message_id, message_text, nm_id)
+                return
+
+            if action == "fbsrestore":
+                if choice == "skip":
+                    self.db.clear_saved_product_fbs("wb_auto", nm_id)
+                    await self._finish_action_message(
+                        chat_id,
+                        message_id,
+                        message_text,
+                        "⏭ Решение: сохранённый остаток на FBS не возвращать.",
+                    )
+                    return
+                if choice != "yes":
+                    return
+                await self._restore_saved_product(
+                    chat_id, message_id, message_text, nm_id
+                )
                 return
         except Exception as exc:
             log.exception("Stock action callback failed: %s", data)
