@@ -571,12 +571,13 @@ class StockMonitorService:
             for chrt_id, qty in current.items()
         }
         self.db.replace_saved_fbs("mass", snapshot)
-        # Массовое обнуление — более новое явное решение пользователя, поэтому
-        # старые индивидуальные автоснимки больше не должны предлагаться.
-        self.db.clear_saved_fbs("wb_auto")
         await self.wb.set_fbs_stocks(
             self.warehouse.id, {chrt_id: 0 for chrt_id in current}
         )
+        # Массовое обнуление — более новое явное решение пользователя, поэтому
+        # старые индивидуальные автоснимки больше не должны предлагаться.
+        # Очищаем их только после успешной записи нулей в WB.
+        self.db.clear_saved_fbs("wb_auto")
         await self.refresh_fbs(notify=False)
         self.db.update_many(
             "total",
@@ -648,21 +649,29 @@ class StockMonitorService:
             return
 
         if data.startswith("fbsallzero:"):
-            if data.endswith(":skip"):
-                await self._finish_action_message(
-                    chat_id, message_id, message_text, "⏭ Массовое обнуление отменено."
-                )
-            elif data.endswith(":yes"):
-                await self._zero_all_fbs(chat_id, message_id, message_text)
+            try:
+                if data.endswith(":skip"):
+                    await self._finish_action_message(
+                        chat_id, message_id, message_text, "⏭ Массовое обнуление отменено."
+                    )
+                elif data.endswith(":yes"):
+                    await self._zero_all_fbs(chat_id, message_id, message_text)
+            except Exception as exc:
+                log.exception("Mass FBS zero failed")
+                await self.tg.send_message(chat_id, f"⚠️ Не удалось обнулить весь FBS: {exc}")
             return
 
         if data.startswith("fbsallrestore:"):
-            if data.endswith(":skip"):
-                await self._finish_action_message(
-                    chat_id, message_id, message_text, "⏭ Восстановление FBS отменено."
-                )
-            elif data.endswith(":yes"):
-                await self._restore_all_fbs(chat_id, message_id, message_text)
+            try:
+                if data.endswith(":skip"):
+                    await self._finish_action_message(
+                        chat_id, message_id, message_text, "⏭ Восстановление FBS отменено."
+                    )
+                elif data.endswith(":yes"):
+                    await self._restore_all_fbs(chat_id, message_id, message_text)
+            except Exception as exc:
+                log.exception("Mass FBS restore failed")
+                await self.tg.send_message(chat_id, f"⚠️ Не удалось восстановить FBS: {exc}")
             return
 
         if data.startswith("stocks:"):
