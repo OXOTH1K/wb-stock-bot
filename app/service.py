@@ -918,17 +918,26 @@ class StockMonitorService:
         return age < max(60, int(self.settings.wb_check_interval))
 
     async def audit_actionable_stocks(self, chat_id: int) -> tuple[int, str | None]:
-        """Refresh current stock snapshots and show actions that need a decision."""
+        """Refresh FBS immediately and reuse a recent WB analytics snapshot."""
         await self.refresh_fbs(notify=False)
-        try:
-            await self.refresh_wb(notify=False, respect_min_interval=True)
-        except Exception as exc:
-            if self.wb_updated_at is None or "WB API 429" not in str(exc):
-                raise
-            log.warning(
-                "WB analytics rate-limited during recovery; using cached snapshot from %s",
-                format_dt(self.wb_updated_at),
+
+        wb_note: str | None = None
+        if self._wb_cache_is_fresh_for_status():
+            wb_note = (
+                "WB: использован последний успешный снимок "
+                f"от {format_dt(self.wb_updated_at)}."
             )
+        else:
+            try:
+                await self.refresh_wb(notify=False, respect_min_interval=True)
+            except Exception as exc:
+                if self.wb_updated_at is None or "WB API 429" not in str(exc):
+                    raise
+                wb_note = (
+                    "⚠️ WB временно ограничил частоту запросов (429). "
+                    "Для сверки использован последний успешный снимок "
+                    f"от {format_dt(self.wb_updated_at)}."
+                )
 
         actionable = 0
         for product in sorted(
