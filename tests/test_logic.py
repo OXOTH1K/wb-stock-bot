@@ -175,6 +175,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wb_appearance_notifies_when_fbs_has_stock(self):
         service = self._service(3)
+        service.wb_stock[100] = 4
         await service._notify_wb_appearances([(100, 0, 4)])
         self.assertEqual(len(service.tg.messages), 1)
         text = service.tg.messages[0][1]
