@@ -119,6 +119,29 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(tg.broadcasts), 1)
         self.assertIn("Новый FBS-заказ", tg.broadcasts[0][1])
 
+    async def test_status_audit_reoffers_notified_but_unassigned_order(self):
+        monitor, _, tg = self.monitor([self.row()], [])
+        await monitor.refresh()
+        self.assertEqual(len(tg.broadcasts), 1)
+
+        count = await monitor.audit_pending(123)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(len(tg.sent), 1)
+        self.assertIn("/status: заказ требует решения", tg.sent[0][1])
+        buttons = tg.sent[0][2]["reply_markup"]["inline_keyboard"]
+        self.assertTrue(any(row[0]["callback_data"] == "ordnew:501" for row in buttons))
+
+    async def test_status_audit_skips_assigned_and_skipped_orders(self):
+        monitor, _, tg = self.monitor([self.row(501), self.row(502)], [])
+        monitor._set_state(501, "assigned", "WB-GI-1")
+        monitor._set_state(502, "skipped")
+
+        count = await monitor.audit_pending(123)
+
+        self.assertEqual(count, 0)
+        self.assertEqual(tg.sent, [])
+
     async def test_existing_supply_add_does_not_create_box(self):
         supply = {"id": "WB-GI-7", "name": "Сегодня", "done": False, "cargoType": 1, "crossBorderType": 0}
         monitor, wb, tg = self.monitor([self.row()], [supply])
