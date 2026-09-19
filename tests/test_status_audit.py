@@ -129,6 +129,47 @@ class StatusAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("429", note)
         self.assertIn("последний успешный снимок", note)
 
+    async def test_status_does_not_repeat_skipped_empty_product_until_stock_changes(self):
+        service, tg = self.service()
+        service.wb_stock = {100: 5, 200: 0, 300: 0}
+        service.wb_updated_at = datetime.now(timezone.utc)
+
+        # Simulate choosing "Не добавлять" for EMPTY while it is 0/0.
+        self.db.save_stock_decision(300, "fbsadd", 0, 0, "skip")
+
+        count, _ = await service.audit_actionable_stocks(123)
+
+        self.assertEqual(count, 2)
+        all_text = "\n".join(text for _, text, _ in tg.sent)
+        self.assertNotIn("Артикул продавца: EMPTY", all_text)
+
+        # A real stock transition starts a new decision cycle.
+        self.db.update_many("fbs", {300: 2})
+        self.db.clear_stock_decisions(300)
+        service.wb.fbs_by_chrt[3] = 0
+        service.wb.wb_by_nm[300] = 0
+        service.wb_updated_at = datetime.now(timezone.utc)
+        service.wb_stock[300] = 0
+
+        # Current 0/0 state can be offered again after the intervening change.
+        tg.sent.clear()
+        count, _ = await service.audit_actionable_stocks(123)
+
+        self.assertEqual(count, 3)
+        all_text = "\n".join(text for _, text, _ in tg.sent)
+        self.assertIn("Артикул продавца: EMPTY", all_text)
+
+    async def test_skip_callback_is_persisted_for_status(self):
+        service, _ = self.service()
+        service.fbs_stock = {100: 3, 200: 0, 300: 0}
+        service.wb_stock = {100: 5, 200: 0, 300: 0}
+
+        await service.handle_callback(123, 7, "fbsadd:300:skip", "alert")
+
+        self.assertTrue(
+            self.db.stock_decision_matches(300, "fbsadd", 0, 0, "skip")
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
