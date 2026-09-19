@@ -231,42 +231,46 @@ class StockMonitorService:
     async def reconcile_after_gap(
         self, gap_started: datetime, recovered_at: datetime
     ) -> None:
-        """Reconcile current stock state after a monitoring gap."""
+        """Reconcile stock snapshots after a monitoring gap.
+
+        Direct before/after changes are recoverable from persisted snapshots.
+        Transient changes that start and finish entirely inside the gap cannot be
+        reconstructed from the current-stock endpoints and are reported as such.
+        """
+        previous_fbs = self.db.get_source("fbs")
+        previous_wb = self.db.get_source("wb")
+
         await self.refresh_fbs(notify=False)
         await self.refresh_wb(notify=False, respect_min_interval=False)
-        await self._flush_pending_alerts()
 
         actionable = 0
-        for nm_id, product in self.products.items():
+        current_total: dict[int, int] = {}
+        for nm_id in self.products:
             fbs_qty = self.fbs_stock.get(nm_id, 0)
             wb_qty = self.wb_stock.get(nm_id, 0)
-            if fbs_qty > 0 and wb_qty > 0:
-                actionable += 1
-                await self.tg.broadcast(
-                    self.settings.telegram_chat_ids,
-                    (
-                        "🟠 Сверка после восстановления связи\n"
-                        f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        f"FBS: {fbs_qty} шт. | WB: {wb_qty} шт.\n\n"
-                        "Сейчас товар есть одновременно на FBS и WB. Обнулить FBS?"
-                    ),
-                    reply_markup=self._wb_appearance_action_keyboard(nm_id),
+            current_total[nm_id] = fbs_qty + wb_qty
+
+            old_fbs = previous_fbs.get(nm_id)
+            old_wb = previous_wb.get(nm_id)
+            if old_fbs is None or old_wb is None:
+                continue
+
+            if old_wb == 0 and wb_qty > 0 and fbs_qty > 0:
+                key = f"wb_appearance:{nm_id}"
+                self.db.put_pending_alert(
+                    key, "wb_appearance", nm_id, old_wb, wb_qty
                 )
-            elif fbs_qty == 0 and wb_qty == 0:
-                saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
-                if saved:
-                    actionable += 1
-                    total = sum(saved.values())
-                    await self.tg.broadcast(
-                        self.settings.telegram_chat_ids,
-                        (
-                            "🟠 Сверка после восстановления связи\n"
-                            f"Артикул продавца: {product.vendor_code or '—'}\n"
-                            "FBS: 0 шт. | WB: 0 шт.\n\n"
-                            f"Есть сохранённый FBS-остаток: {total} шт. Вернуть его?"
-                        ),
-                        reply_markup=self._saved_restore_keyboard(nm_id, total),
-                    )
+                actionable += 1
+
+            if old_fbs + old_wb > 0 and fbs_qty + wb_qty == 0:
+                key = f"depletion:{nm_id}"
+                self.db.put_pending_alert(
+                    key, "depletion", nm_id, old_fbs + old_wb, 0
+                )
+                actionable += 1
+
+        self.db.update_many("total", current_total)
+        await self._flush_pending_alerts()
 
         minutes = max(1, int((recovered_at - gap_started).total_seconds() // 60))
         await self.tg.broadcast(
@@ -274,8 +278,8 @@ class StockMonitorService:
             (
                 "🌐 Связь восстановлена\n"
                 f"Период без надёжного мониторинга: около {minutes} мин.\n"
-                "Текущие остатки и пропущенные уведомления сверены.\n"
-                f"Ситуаций, требующих решения сейчас: {actionable}.\n\n"
+                "Новые заказы, текущие остатки и недоставленные уведомления сверены.\n"
+                f"Восстановлено актуальных ситуаций по остаткам: {actionable}.\n\n"
                 "Важно: WB отдаёт текущий снимок остатков, поэтому короткий "
                 "переход «появился и снова закончился» целиком внутри периода "
                 "без связи восстановить точно нельзя."
