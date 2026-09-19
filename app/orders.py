@@ -240,6 +240,35 @@ class OrderMonitor:
             await self.tg.broadcast(self.settings.telegram_chat_ids, self._text(order, supplies), reply_markup=self._keyboard(order, supplies))
             self._remember(order)
 
+    async def audit_pending(self, chat_id: int) -> int:
+        """Show currently-new orders that still need a decision in this chat."""
+        orders = await self._new_orders()
+        pending = []
+        for order in orders:
+            state = self._state(order.id)
+            if state and state[0] in {"assigned", "skipped"}:
+                continue
+            pending.append(order)
+
+        if not pending:
+            return 0
+
+        supplies = None
+        try:
+            supplies = await self._supplies()
+        except Exception:
+            log.exception("Could not load supplies for status audit")
+
+        for order in sorted(pending, key=lambda o: (o.created_at, o.id)):
+            await self.tg.send_message(
+                chat_id,
+                "🔎 /status: заказ требует решения\n\n" + self._text(order, supplies),
+                reply_markup=self._keyboard(order, supplies),
+            )
+            if self._state(order.id) is None:
+                self._remember(order)
+        return len(pending)
+
     async def reconcile_since(self, since: datetime) -> tuple[int, int]:
         rows = await self._orders_since(since)
         unseen_rows = [row for row in rows if self._state(int(row["id"])) is None]

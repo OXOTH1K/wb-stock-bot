@@ -34,6 +34,28 @@ async def amain() -> None:
             orders = OrderMonitor(settings, wb, tg, db, service.warehouse.id)
             await orders.poll_once(service.reconcile_after_gap)
 
+            async def message_handler(chat_id: int, text: str) -> None:
+                command = (text.split(maxsplit=1)[0] if text.strip() else "").split("@", 1)[0].lower()
+                if command == "/status" and chat_id in settings.telegram_chat_ids:
+                    await tg.send_message(chat_id, "🔎 Проверяю заказы и остатки…")
+                    try:
+                        order_count = await orders.audit_pending(chat_id)
+                        stock_count = await service.audit_actionable_stocks(chat_id)
+                        await tg.send_message(
+                            chat_id,
+                            (
+                                service._format_status()
+                                + "\n\n"
+                                + f"Необработанных новых заказов: {order_count}\n"
+                                + f"Ситуаций по остаткам, требующих решения: {stock_count}"
+                            ),
+                        )
+                    except Exception as exc:
+                        logging.getLogger(__name__).exception("Status audit failed")
+                        await tg.send_message(chat_id, f"⚠️ Не удалось выполнить полную сверку: {exc}")
+                    return
+                await service.handle_message(chat_id, text)
+
             async def callback_handler(
                 chat_id: int, message_id: int, data: str, message_text: str = ""
             ) -> None:
@@ -43,7 +65,7 @@ async def amain() -> None:
 
             tasks = [
                 asyncio.create_task(
-                    tg.polling_loop(service.handle_message, callback_handler),
+                    tg.polling_loop(message_handler, callback_handler),
                     name="telegram",
                 ),
                 asyncio.create_task(service.fbs_loop(), name="fbs-monitor"),
