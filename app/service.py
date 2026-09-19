@@ -188,7 +188,7 @@ class StockMonitorService:
                 "🟢 Товар появился на складе WB\n"
                 f"Артикул продавца: {product.vendor_code or '—'}\n"
                 f"На вашем складе: {fbs_qty} шт.\n"
-                f"На складах WB: было {old_qty} шт. → сейчас {wb_qty} шт.\n\n"
+                f"На складах WB: было {old_qty} шт. → стало {wb_qty} шт.\n\n"
                 "Обнулить остаток на вашем FBS-складе?"
             )
             keyboard = self._wb_appearance_action_keyboard(nm_id)
