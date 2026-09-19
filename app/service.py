@@ -241,7 +241,26 @@ class StockMonitorService:
         previous_wb = self.db.get_source("wb")
 
         await self.refresh_fbs(notify=False)
-        await self.refresh_wb(notify=False, respect_min_interval=False)
+
+        wb_note: str | None = None
+        if self._wb_cache_is_fresh_for_status():
+            wb_note = (
+                "WB: использован последний успешный снимок "
+                f"от {format_dt(self.wb_updated_at)}."
+            )
+        else:
+            try:
+                await self.refresh_wb(notify=False, respect_min_interval=True)
+            except Exception as exc:
+                if self.wb_updated_at is None:
+                    raise
+                if "WB API 429" not in str(exc):
+                    raise
+                wb_note = (
+                    "⚠️ WB временно ограничил частоту запросов (429). "
+                    "Для сверки использован последний успешный снимок "
+                    f"от {format_dt(self.wb_updated_at)}."
+                )
 
         actionable = 0
         current_total: dict[int, int] = {}
@@ -892,7 +911,13 @@ class StockMonitorService:
             lines.append(f"\nПоказаны первые 30 из {len(matches)}.")
         return "\n".join(lines)
 
-    async def audit_actionable_stocks(self, chat_id: int) -> int:
+    def _wb_cache_is_fresh_for_status(self) -> bool:
+        if self.wb_updated_at is None:
+            return False
+        age = (datetime.now(timezone.utc) - self.wb_updated_at).total_seconds()
+        return age < max(60, int(self.settings.wb_check_interval))
+
+    async def audit_actionable_stocks(self, chat_id: int) -> tuple[int, str | None]:
         """Refresh current stock snapshots and show actions that need a decision."""
         await self.refresh_fbs(notify=False)
         await self.refresh_wb(notify=False, respect_min_interval=False)
@@ -947,7 +972,7 @@ class StockMonitorService:
                     reply_markup=keyboard,
                 )
 
-        return actionable
+        return actionable, wb_note
 
     def _format_status(self) -> str:
         warehouse = self.warehouse.name if self.warehouse else "—"
