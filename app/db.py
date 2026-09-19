@@ -51,6 +51,13 @@ class StateDB:
         ).fetchone()
         return None if row is None else int(row[0])
 
+    def get_source(self, source: str) -> dict[int, int]:
+        rows = self.conn.execute(
+            "SELECT nm_id, quantity FROM stock_state WHERE source = ?",
+            (source,),
+        ).fetchall()
+        return {int(nm_id): int(quantity) for nm_id, quantity in rows}
+
     def update_many(self, source: str, quantities: dict[int, int]) -> list[tuple[int, int, int]]:
         """Persist quantities and return transitions (nm_id, old_qty, new_qty)."""
         now = datetime.now(timezone.utc).isoformat()
