@@ -301,6 +301,13 @@ class StateDB:
                 (int(nm_id), str(action)),
             )
 
+    def clear_stock_decisions(self, nm_id: int) -> None:
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM stock_decision WHERE nm_id = ?",
+                (int(nm_id),),
+            )
+
     def get_meta(self, key: str) -> str | None:
         row = self.conn.execute(
             "SELECT value FROM bot_meta WHERE key = ?",
