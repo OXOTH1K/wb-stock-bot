@@ -158,7 +158,7 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(wb.created), 1)
         _, name = wb.created[0]
-        self.assertRegex(name, r"^TG \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$")
+        self.assertRegex(name, r"^TG \d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
         self.assertNotIn("SKU-501", name)
 
     async def test_new_supply_creates_exactly_one_box_and_duplicate_click_is_safe(self):
