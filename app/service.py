@@ -920,7 +920,15 @@ class StockMonitorService:
     async def audit_actionable_stocks(self, chat_id: int) -> tuple[int, str | None]:
         """Refresh current stock snapshots and show actions that need a decision."""
         await self.refresh_fbs(notify=False)
-        await self.refresh_wb(notify=False, respect_min_interval=False)
+        try:
+            await self.refresh_wb(notify=False, respect_min_interval=True)
+        except Exception as exc:
+            if self.wb_updated_at is None or "WB API 429" not in str(exc):
+                raise
+            log.warning(
+                "WB analytics rate-limited during recovery; using cached snapshot from %s",
+                format_dt(self.wb_updated_at),
+            )
 
         actionable = 0
         for product in sorted(
