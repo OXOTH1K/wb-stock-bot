@@ -87,7 +87,9 @@ class StockMonitorService:
             current = aggregate_by_nm(by_chrt, self.sizes)
             self.fbs_stock = current
             self.fbs_updated_at = datetime.now(timezone.utc)
-            self.db.update_many("fbs", current)
+            transitions = self.db.update_many("fbs", current)
+            for nm_id, _, _ in transitions:
+                self.db.clear_stock_decisions(nm_id)
             self._fbs_loaded = True
             if notify:
                 await self._flush_pending_alerts()
@@ -108,6 +110,8 @@ class StockMonitorService:
             self.wb_stock = current
             self.wb_updated_at = datetime.now(timezone.utc)
             transitions = self.db.update_many("wb", current)
+            for nm_id, _, _ in transitions:
+                self.db.clear_stock_decisions(nm_id)
             self._wb_loaded = True
             if notify:
                 await self._flush_pending_alerts()
