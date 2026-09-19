@@ -40,16 +40,16 @@ async def amain() -> None:
                     await tg.send_message(chat_id, "🔎 Проверяю заказы и остатки…")
                     try:
                         order_count = await orders.audit_pending(chat_id)
-                        stock_count = await service.audit_actionable_stocks(chat_id)
-                        await tg.send_message(
-                            chat_id,
-                            (
-                                service._format_status()
-                                + "\n\n"
-                                + f"Необработанных новых заказов: {order_count}\n"
-                                + f"Ситуаций по остаткам, требующих решения: {stock_count}"
-                            ),
+                        stock_count, wb_note = await service.audit_actionable_stocks(chat_id)
+                        summary = (
+                            service._format_status()
+                            + "\n\n"
+                            + f"Необработанных новых заказов: {order_count}\n"
+                            + f"Ситуаций по остаткам, требующих решения: {stock_count}"
                         )
+                        if wb_note:
+                            summary += "\n" + wb_note
+                        await tg.send_message(chat_id, summary)
                     except Exception as exc:
                         logging.getLogger(__name__).exception("Status audit failed")
                         await tg.send_message(chat_id, f"⚠️ Не удалось выполнить полную сверку: {exc}")
