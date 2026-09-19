@@ -42,6 +42,18 @@ class StateDB:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pending_alert (
+                alert_key TEXT PRIMARY KEY,
+                alert_type TEXT NOT NULL,
+                nm_id INTEGER NOT NULL,
+                old_qty INTEGER NOT NULL DEFAULT 0,
+                new_qty INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
     def get(self, source: str, nm_id: int) -> int | None:
@@ -159,6 +171,58 @@ class StateDB:
             self.conn.execute(
                 "DELETE FROM fbs_saved_stock WHERE scope = ?",
                 (scope,),
+            )
+
+    def put_pending_alert(
+        self,
+        alert_key: str,
+        alert_type: str,
+        nm_id: int,
+        old_qty: int = 0,
+        new_qty: int = 0,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO pending_alert(
+                    alert_key, alert_type, nm_id, old_qty, new_qty, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(alert_key) DO UPDATE SET
+                    alert_type = excluded.alert_type,
+                    nm_id = excluded.nm_id,
+                    old_qty = excluded.old_qty,
+                    new_qty = excluded.new_qty
+                """,
+                (
+                    str(alert_key),
+                    str(alert_type),
+                    int(nm_id),
+                    int(old_qty),
+                    int(new_qty),
+                    now,
+                ),
+            )
+
+    def list_pending_alerts(self) -> list[tuple[str, str, int, int, int]]:
+        rows = self.conn.execute(
+            """
+            SELECT alert_key, alert_type, nm_id, old_qty, new_qty
+            FROM pending_alert
+            ORDER BY created_at, alert_key
+            """
+        ).fetchall()
+        return [
+            (str(key), str(kind), int(nm_id), int(old_qty), int(new_qty))
+            for key, kind, nm_id, old_qty, new_qty in rows
+        ]
+
+    def delete_pending_alert(self, alert_key: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM pending_alert WHERE alert_key = ?",
+                (str(alert_key),),
             )
 
     def get_meta(self, key: str) -> str | None:
