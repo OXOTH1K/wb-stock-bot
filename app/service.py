@@ -89,8 +89,10 @@ class StockMonitorService:
             self.fbs_updated_at = datetime.now(timezone.utc)
             self.db.update_many("fbs", current)
             self._fbs_loaded = True
-            if notify and self._wb_loaded:
-                await self._notify_total_depletions()
+            if notify:
+                await self._flush_pending_alerts()
+                if self._wb_loaded:
+                    await self._notify_total_depletions()
             return current
 
     async def refresh_wb(self, notify: bool = True, respect_min_interval: bool = True) -> dict[int, int]:
@@ -108,6 +110,7 @@ class StockMonitorService:
             transitions = self.db.update_many("wb", current)
             self._wb_loaded = True
             if notify:
+                await self._flush_pending_alerts()
                 if self._fbs_loaded:
                     await self._notify_total_depletions()
                 await self._notify_wb_appearances(transitions)
@@ -134,33 +137,9 @@ class StockMonitorService:
             if old_qty <= 0 or new_qty != 0:
                 continue
 
-            product = self.products.get(nm_id)
-            saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
-            saved_total = sum(saved.values())
-            if saved_total > 0:
-                text = (
-                    "🔴 Товар закончился на складе WB\n"
-                    f"Артикул продавца: {product.vendor_code if product else '—'}\n"
-                    "На вашем складе FBS: 0 шт.\n"
-                    "На складах WB: 0 шт.\n\n"
-                    f"Перед обнулением FBS было сохранено: {saved_total} шт.\n"
-                    "Вернуть сохранённый остаток на FBS?"
-                )
-                keyboard = self._saved_restore_keyboard(nm_id, saved_total)
-            else:
-                text = (
-                    "🔴 Товар закончился везде\n"
-                    f"Артикул продавца: {product.vendor_code if product else '—'}\n"
-                    "На вашем складе: 0 шт.\n"
-                    "На складах WB: 0 шт.\n\n"
-                    "Добавить остаток на ваш FBS-склад?"
-                )
-                keyboard = self._depletion_action_keyboard(nm_id)
-            await self.tg.broadcast(
-                self.settings.telegram_chat_ids,
-                text,
-                reply_markup=keyboard,
-            )
+            key = f"depletion:{nm_id}"
+            self.db.put_pending_alert(key, "depletion", nm_id, old_qty, new_qty)
+            await self._deliver_pending_alert(key, "depletion", nm_id, old_qty, new_qty)
 
     async def _notify_wb_appearances(
         self, transitions: list[tuple[int, int, int]]
@@ -174,18 +153,138 @@ class StockMonitorService:
             if fbs_qty <= 0:
                 continue
 
-            product = self.products.get(nm_id)
-            await self.tg.broadcast(
-                self.settings.telegram_chat_ids,
-                (
-                    "🟢 Товар появился на складе WB\n"
-                    f"Артикул продавца: {product.vendor_code if product else '—'}\n"
-                    f"На вашем складе: {fbs_qty} шт.\n"
-                    f"На складах WB: было 0 шт. → стало {new_qty} шт.\n\n"
-                    "Обнулить остаток на вашем FBS-складе?"
-                ),
-                reply_markup=self._wb_appearance_action_keyboard(nm_id),
+            key = f"wb_appearance:{nm_id}"
+            self.db.put_pending_alert(key, "wb_appearance", nm_id, old_qty, new_qty)
+            await self._deliver_pending_alert(
+                key, "wb_appearance", nm_id, old_qty, new_qty
             )
+
+    async def _flush_pending_alerts(self) -> None:
+        for alert_key, alert_type, nm_id, old_qty, new_qty in self.db.list_pending_alerts():
+            await self._deliver_pending_alert(
+                alert_key, alert_type, nm_id, old_qty, new_qty
+            )
+
+    async def _deliver_pending_alert(
+        self,
+        alert_key: str,
+        alert_type: str,
+        nm_id: int,
+        old_qty: int,
+        new_qty: int,
+    ) -> None:
+        product = self.products.get(nm_id)
+        if product is None:
+            self.db.delete_pending_alert(alert_key)
+            return
+
+        if alert_type == "wb_appearance":
+            fbs_qty = self.fbs_stock.get(nm_id, 0)
+            wb_qty = self.wb_stock.get(nm_id, 0)
+            if fbs_qty <= 0 or wb_qty <= 0:
+                self.db.delete_pending_alert(alert_key)
+                return
+            text = (
+                "🟢 Товар появился на складе WB\n"
+                f"Артикул продавца: {product.vendor_code or '—'}\n"
+                f"На вашем складе: {fbs_qty} шт.\n"
+                f"На складах WB: было {old_qty} шт. → стало {wb_qty} шт.\n\n"
+                "Обнулить остаток на вашем FBS-складе?"
+            )
+            keyboard = self._wb_appearance_action_keyboard(nm_id)
+        elif alert_type == "depletion":
+            if self.fbs_stock.get(nm_id, 0) + self.wb_stock.get(nm_id, 0) != 0:
+                self.db.delete_pending_alert(alert_key)
+                return
+            saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
+            saved_total = sum(saved.values())
+            if saved_total > 0:
+                text = (
+                    "🔴 Товар закончился на складе WB\n"
+                    f"Артикул продавца: {product.vendor_code or '—'}\n"
+                    "На вашем складе FBS: 0 шт.\n"
+                    "На складах WB: 0 шт.\n\n"
+                    f"Перед обнулением FBS было сохранено: {saved_total} шт.\n"
+                    "Вернуть сохранённый остаток на FBS?"
+                )
+                keyboard = self._saved_restore_keyboard(nm_id, saved_total)
+            else:
+                text = (
+                    "🔴 Товар закончился везде\n"
+                    f"Артикул продавца: {product.vendor_code or '—'}\n"
+                    "На вашем складе: 0 шт.\n"
+                    "На складах WB: 0 шт.\n\n"
+                    "Добавить остаток на ваш FBS-склад?"
+                )
+                keyboard = self._depletion_action_keyboard(nm_id)
+        else:
+            self.db.delete_pending_alert(alert_key)
+            return
+
+        await self.tg.broadcast(
+            self.settings.telegram_chat_ids,
+            text,
+            reply_markup=keyboard,
+        )
+        self.db.delete_pending_alert(alert_key)
+
+    async def reconcile_after_gap(
+        self, gap_started: datetime, recovered_at: datetime
+    ) -> None:
+        """Reconcile stock snapshots after a monitoring gap.
+
+        Direct before/after changes are recoverable from persisted snapshots.
+        Transient changes that start and finish entirely inside the gap cannot be
+        reconstructed from the current-stock endpoints and are reported as such.
+        """
+        previous_fbs = self.db.get_source("fbs")
+        previous_wb = self.db.get_source("wb")
+
+        await self.refresh_fbs(notify=False)
+        await self.refresh_wb(notify=False, respect_min_interval=False)
+
+        actionable = 0
+        current_total: dict[int, int] = {}
+        for nm_id in self.products:
+            fbs_qty = self.fbs_stock.get(nm_id, 0)
+            wb_qty = self.wb_stock.get(nm_id, 0)
+            current_total[nm_id] = fbs_qty + wb_qty
+
+            old_fbs = previous_fbs.get(nm_id)
+            old_wb = previous_wb.get(nm_id)
+            if old_fbs is None or old_wb is None:
+                continue
+
+            if old_wb == 0 and wb_qty > 0 and fbs_qty > 0:
+                key = f"wb_appearance:{nm_id}"
+                self.db.put_pending_alert(
+                    key, "wb_appearance", nm_id, old_wb, wb_qty
+                )
+                actionable += 1
+
+            if old_fbs + old_wb > 0 and fbs_qty + wb_qty == 0:
+                key = f"depletion:{nm_id}"
+                self.db.put_pending_alert(
+                    key, "depletion", nm_id, old_fbs + old_wb, 0
+                )
+                actionable += 1
+
+        self.db.update_many("total", current_total)
+        await self._flush_pending_alerts()
+
+        minutes = max(1, int((recovered_at - gap_started).total_seconds() // 60))
+        await self.tg.broadcast(
+            self.settings.telegram_chat_ids,
+            (
+                "🌐 Связь восстановлена\n"
+                f"Период без надёжного мониторинга: около {minutes} мин.\n"
+                "Новые заказы, текущие остатки и недоставленные уведомления сверены.\n"
+                f"Восстановлено актуальных ситуаций по остаткам: {actionable}.\n\n"
+                "Важно: WB отдаёт текущий снимок остатков, поэтому короткий "
+                "переход «появился и снова закончился» целиком внутри периода "
+                "без связи восстановить точно нельзя."
+            ),
+        )
 
     async def handle_message(self, chat_id: int, text: str) -> None:
         command, *args = text.split()

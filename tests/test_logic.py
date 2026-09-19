@@ -102,6 +102,7 @@ class FakeDB:
     def __init__(self, previous=None):
         self.state = dict(previous or {})
         self.saved = {}
+        self.pending = {}
 
     def update_many(self, source, quantities):
         transitions = []
@@ -147,6 +148,17 @@ class FakeDB:
         for key in [k for k in self.saved if k[0] == scope]:
             del self.saved[key]
 
+    def put_pending_alert(self, alert_key, alert_type, nm_id, old_qty=0, new_qty=0):
+        self.pending[alert_key] = (
+            alert_key, alert_type, int(nm_id), int(old_qty), int(new_qty)
+        )
+
+    def list_pending_alerts(self):
+        return list(self.pending.values())
+
+    def delete_pending_alert(self, alert_key):
+        self.pending.pop(alert_key, None)
+
 
 class NotificationTests(unittest.IsolatedAsyncioTestCase):
     def _service(self, fbs_qty):
@@ -155,6 +167,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         service.fbs_stock = {100: fbs_qty}
         service.wb_stock = {100: 0}
         service.tg = FakeTelegram()
+        service.db = FakeDB()
         service.settings = SimpleNamespace(
             telegram_chat_ids=frozenset({123}), stocks_page_size=25
         )
@@ -162,6 +175,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wb_appearance_notifies_when_fbs_has_stock(self):
         service = self._service(3)
+        service.wb_stock[100] = 4
         await service._notify_wb_appearances([(100, 0, 4)])
         self.assertEqual(len(service.tg.messages), 1)
         text = service.tg.messages[0][1]
