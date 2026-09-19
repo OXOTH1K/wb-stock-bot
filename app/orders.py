@@ -379,7 +379,7 @@ class OrderMonitor:
         await self.tg.edit_message_text(chat_id, message_id, self._text(order, supplies), reply_markup=self._keyboard(order, supplies))
 
     async def _create_supply(self, order: FBSOrder) -> str:
-        name = f"TG {datetime.now().astimezone():%Y-%m-%d %H:%M} {order.article or order.id}"[:128]
+        name = f"TG {datetime.now().astimezone():%Y-%m-%d %H:%M}"
         data = await self.wb._json("POST", f"{self.wb.MARKETPLACE_BASE}/api/v3/supplies", json={"name": name})
         supply_id = str((data or {}).get("id") or "")
         if not supply_id:
