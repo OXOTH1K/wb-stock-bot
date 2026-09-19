@@ -103,6 +103,7 @@ class FakeDB:
         self.state = dict(previous or {})
         self.saved = {}
         self.pending = {}
+        self.decisions = {}
 
     def update_many(self, source, quantities):
         transitions = []
@@ -158,6 +159,23 @@ class FakeDB:
 
     def delete_pending_alert(self, alert_key):
         self.pending.pop(alert_key, None)
+
+    def save_stock_decision(self, nm_id, action, fbs_qty, wb_qty, decision):
+        self.decisions[(int(nm_id), str(action))] = (
+            int(fbs_qty), int(wb_qty), str(decision)
+        )
+
+    def stock_decision_matches(self, nm_id, action, fbs_qty, wb_qty, decision="skip"):
+        return self.decisions.get((int(nm_id), str(action))) == (
+            int(fbs_qty), int(wb_qty), str(decision)
+        )
+
+    def clear_stock_decision(self, nm_id, action):
+        self.decisions.pop((int(nm_id), str(action)), None)
+
+    def clear_stock_decisions(self, nm_id):
+        for key in [k for k in self.decisions if k[0] == int(nm_id)]:
+            del self.decisions[key]
 
 
 class NotificationTests(unittest.IsolatedAsyncioTestCase):

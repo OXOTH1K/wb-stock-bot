@@ -54,6 +54,19 @@ class StateDB:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stock_decision (
+                nm_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                fbs_qty INTEGER NOT NULL,
+                wb_qty INTEGER NOT NULL,
+                decision TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (nm_id, action)
+            )
+            """
+        )
         self.conn.commit()
 
     def get(self, source: str, nm_id: int) -> int | None:
@@ -223,6 +236,76 @@ class StateDB:
             self.conn.execute(
                 "DELETE FROM pending_alert WHERE alert_key = ?",
                 (str(alert_key),),
+            )
+
+    def save_stock_decision(
+        self,
+        nm_id: int,
+        action: str,
+        fbs_qty: int,
+        wb_qty: int,
+        decision: str,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO stock_decision(
+                    nm_id, action, fbs_qty, wb_qty, decision, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(nm_id, action) DO UPDATE SET
+                    fbs_qty = excluded.fbs_qty,
+                    wb_qty = excluded.wb_qty,
+                    decision = excluded.decision,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(nm_id),
+                    str(action),
+                    int(fbs_qty),
+                    int(wb_qty),
+                    str(decision),
+                    now,
+                ),
+            )
+
+    def stock_decision_matches(
+        self,
+        nm_id: int,
+        action: str,
+        fbs_qty: int,
+        wb_qty: int,
+        decision: str = "skip",
+    ) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT fbs_qty, wb_qty, decision
+            FROM stock_decision
+            WHERE nm_id = ? AND action = ?
+            """,
+            (int(nm_id), str(action)),
+        ).fetchone()
+        if row is None:
+            return False
+        return (
+            int(row[0]) == int(fbs_qty)
+            and int(row[1]) == int(wb_qty)
+            and str(row[2]) == str(decision)
+        )
+
+    def clear_stock_decision(self, nm_id: int, action: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM stock_decision WHERE nm_id = ? AND action = ?",
+                (int(nm_id), str(action)),
+            )
+
+    def clear_stock_decisions(self, nm_id: int) -> None:
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM stock_decision WHERE nm_id = ?",
+                (int(nm_id),),
             )
 
     def get_meta(self, key: str) -> str | None:

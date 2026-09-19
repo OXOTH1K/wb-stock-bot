@@ -87,7 +87,9 @@ class StockMonitorService:
             current = aggregate_by_nm(by_chrt, self.sizes)
             self.fbs_stock = current
             self.fbs_updated_at = datetime.now(timezone.utc)
-            self.db.update_many("fbs", current)
+            transitions = self.db.update_many("fbs", current)
+            for nm_id, _, _ in transitions:
+                self.db.clear_stock_decisions(nm_id)
             self._fbs_loaded = True
             if notify:
                 await self._flush_pending_alerts()
@@ -108,6 +110,8 @@ class StockMonitorService:
             self.wb_stock = current
             self.wb_updated_at = datetime.now(timezone.utc)
             transitions = self.db.update_many("wb", current)
+            for nm_id, _, _ in transitions:
+                self.db.clear_stock_decisions(nm_id)
             self._wb_loaded = True
             if notify:
                 await self._flush_pending_alerts()
@@ -662,6 +666,7 @@ class StockMonitorService:
             return
         await self.wb.set_fbs_stocks(self.warehouse.id, saved)
         self.db.clear_saved_product_fbs("wb_auto", nm_id)
+        self.db.clear_stock_decision(nm_id, "fbsrestore")
         await self.refresh_fbs(notify=False)
         total = sum(saved.values())
         await self._finish_action_message(
@@ -819,6 +824,13 @@ class StockMonitorService:
 
             if action == "fbsadd":
                 if choice == "skip":
+                    self.db.save_stock_decision(
+                        nm_id,
+                        "fbsadd",
+                        self.fbs_stock.get(nm_id, 0),
+                        self.wb_stock.get(nm_id, 0),
+                        "skip",
+                    )
                     await self._finish_action_message(
                         chat_id, message_id, message_text, "⏭ Решение: не добавлять на FBS."
                     )
@@ -832,6 +844,13 @@ class StockMonitorService:
 
             if action == "fbszero":
                 if choice == "skip":
+                    self.db.save_stock_decision(
+                        nm_id,
+                        "fbszero",
+                        self.fbs_stock.get(nm_id, 0),
+                        self.wb_stock.get(nm_id, 0),
+                        "skip",
+                    )
                     await self._finish_action_message(
                         chat_id,
                         message_id,
@@ -846,7 +865,13 @@ class StockMonitorService:
 
             if action == "fbsrestore":
                 if choice == "skip":
-                    self.db.clear_saved_product_fbs("wb_auto", nm_id)
+                    self.db.save_stock_decision(
+                        nm_id,
+                        "fbsrestore",
+                        self.fbs_stock.get(nm_id, 0),
+                        self.wb_stock.get(nm_id, 0),
+                        "skip",
+                    )
                     await self._finish_action_message(
                         chat_id,
                         message_id,
@@ -949,6 +974,10 @@ class StockMonitorService:
             wb_qty = self.wb_stock.get(nm_id, 0)
 
             if fbs_qty > 0 and wb_qty > 0:
+                if self.db.stock_decision_matches(
+                    nm_id, "fbszero", fbs_qty, wb_qty, "skip"
+                ):
+                    continue
                 actionable += 1
                 await self.tg.send_message(
                     chat_id,
@@ -965,6 +994,11 @@ class StockMonitorService:
             if fbs_qty == 0 and wb_qty == 0:
                 saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
                 saved_total = sum(saved.values())
+                action = "fbsrestore" if saved_total > 0 else "fbsadd"
+                if self.db.stock_decision_matches(
+                    nm_id, action, fbs_qty, wb_qty, "skip"
+                ):
+                    continue
                 actionable += 1
                 if saved_total > 0:
                     text = (
