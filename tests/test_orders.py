@@ -151,6 +151,16 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(wb.box_adds, [])
         self.assertIn("Заказ добавлен", tg.edits[-1][2])
 
+    async def test_new_supply_name_does_not_include_article(self):
+        monitor, wb, _ = self.monitor([self.row()], [])
+        await monitor.refresh()
+        await monitor.handle_callback(123, 9, "ordnew:501", "alert")
+
+        self.assertEqual(len(wb.created), 1)
+        _, name = wb.created[0]
+        self.assertRegex(name, r"^TG \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$")
+        self.assertNotIn("SKU-501", name)
+
     async def test_new_supply_creates_exactly_one_box_and_duplicate_click_is_safe(self):
         monitor, wb, tg = self.monitor([self.row()], [])
         await monitor.refresh()
