@@ -33,6 +33,15 @@ class StateDB:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
     def get(self, source: str, nm_id: int) -> int | None:
@@ -143,6 +152,27 @@ class StateDB:
             self.conn.execute(
                 "DELETE FROM fbs_saved_stock WHERE scope = ?",
                 (scope,),
+            )
+
+    def get_meta(self, key: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT value FROM bot_meta WHERE key = ?",
+            (str(key),),
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    def set_meta(self, key: str, value: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO bot_meta(key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (str(key), str(value), now),
             )
 
     def close(self) -> None:
