@@ -892,6 +892,63 @@ class StockMonitorService:
             lines.append(f"\nПоказаны первые 30 из {len(matches)}.")
         return "\n".join(lines)
 
+    async def audit_actionable_stocks(self, chat_id: int) -> int:
+        """Refresh current stock snapshots and show actions that need a decision."""
+        await self.refresh_fbs(notify=False)
+        await self.refresh_wb(notify=False, respect_min_interval=False)
+
+        actionable = 0
+        for product in sorted(
+            self.products.values(),
+            key=lambda p: (p.vendor_code.lower(), p.nm_id),
+        ):
+            nm_id = product.nm_id
+            fbs_qty = self.fbs_stock.get(nm_id, 0)
+            wb_qty = self.wb_stock.get(nm_id, 0)
+
+            if fbs_qty > 0 and wb_qty > 0:
+                actionable += 1
+                await self.tg.send_message(
+                    chat_id,
+                    (
+                        "🔎 /status: товар есть одновременно на FBS и WB\n"
+                        f"Артикул продавца: {product.vendor_code or '—'}\n"
+                        f"FBS: {fbs_qty} шт. | WB: {wb_qty} шт.\n\n"
+                        "Обнулить остаток на FBS?"
+                    ),
+                    reply_markup=self._wb_appearance_action_keyboard(nm_id),
+                )
+                continue
+
+            if fbs_qty == 0 and wb_qty == 0:
+                saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
+                saved_total = sum(saved.values())
+                actionable += 1
+                if saved_total > 0:
+                    text = (
+                        "🔎 /status: товар закончился на WB и FBS\n"
+                        f"Артикул продавца: {product.vendor_code or '—'}\n"
+                        "FBS: 0 шт. | WB: 0 шт.\n\n"
+                        f"Сохранённый FBS-остаток: {saved_total} шт.\n"
+                        "Вернуть его на FBS?"
+                    )
+                    keyboard = self._saved_restore_keyboard(nm_id, saved_total)
+                else:
+                    text = (
+                        "🔎 /status: товар закончился везде\n"
+                        f"Артикул продавца: {product.vendor_code or '—'}\n"
+                        "FBS: 0 шт. | WB: 0 шт.\n\n"
+                        "Добавить остаток на FBS?"
+                    )
+                    keyboard = self._depletion_action_keyboard(nm_id)
+                await self.tg.send_message(
+                    chat_id,
+                    text,
+                    reply_markup=keyboard,
+                )
+
+        return actionable
+
     def _format_status(self) -> str:
         warehouse = self.warehouse.name if self.warehouse else "—"
         return (
