@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,9 +24,11 @@ class FakeTelegram:
 
 
 class FakeWB:
-    def __init__(self, fbs_by_chrt, wb_by_nm):
+    def __init__(self, fbs_by_chrt, wb_by_nm, wb_error=None):
         self.fbs_by_chrt = dict(fbs_by_chrt)
         self.wb_by_nm = dict(wb_by_nm)
+        self.wb_error = wb_error
+        self.wb_calls = 0
 
     async def get_fbs_stocks(self, warehouse_id, chrt_ids):
         return {
@@ -34,6 +37,9 @@ class FakeWB:
         }
 
     async def get_wb_stocks_by_nm(self, nm_ids):
+        self.wb_calls += 1
+        if self.wb_error is not None:
+            raise self.wb_error
         return {int(nm_id): int(self.wb_by_nm.get(int(nm_id), 0)) for nm_id in nm_ids}
 
 
@@ -75,9 +81,10 @@ class StatusAuditTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_stock_audit_offers_three_actionable_flows(self):
         service, tg = self.service()
 
-        count = await service.audit_actionable_stocks(123)
+        count, note = await service.audit_actionable_stocks(123)
 
         self.assertEqual(count, 3)
+        self.assertIsNone(note)
         self.assertEqual(len(tg.sent), 3)
 
         messages = {text: kwargs for _, text, kwargs in tg.sent}
@@ -97,6 +104,30 @@ class StatusAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fbsrestore:200:yes", callbacks)
         self.assertIn("fbsadd:300:1", callbacks)
         self.assertIn("fbsadd:300:5", callbacks)
+
+    async def test_status_uses_fresh_wb_cache_without_extra_analytics_request(self):
+        service, _ = self.service()
+        service.wb_stock = {100: 5, 200: 0, 300: 0}
+        service.wb_updated_at = datetime.now(timezone.utc)
+        service.wb.wb_calls = 0
+
+        _, note = await service.audit_actionable_stocks(123)
+
+        self.assertEqual(service.wb.wb_calls, 0)
+        self.assertIn("последний успешный снимок", note)
+
+    async def test_status_falls_back_to_stale_cache_on_429(self):
+        service, _ = self.service()
+        service.wb_stock = {100: 5, 200: 0, 300: 0}
+        service.wb_updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        service.wb.wb_error = RuntimeError("WB API 429: Too Many Requests")
+
+        count, note = await service.audit_actionable_stocks(123)
+
+        self.assertEqual(count, 3)
+        self.assertEqual(service.wb.wb_calls, 1)
+        self.assertIn("429", note)
+        self.assertIn("последний успешный снимок", note)
 
 
 if __name__ == "__main__":
