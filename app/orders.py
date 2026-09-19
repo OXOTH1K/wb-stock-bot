@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from .config import Settings
 from .db import StateDB
@@ -33,6 +34,9 @@ class FBSSupply:
     cargo_type: int
     cross_border_type: int
     created_at: str = ""
+
+
+RecoveryHandler = Callable[[datetime, datetime], Awaitable[None]]
 
 
 class OrderMonitor:
@@ -91,19 +95,75 @@ class OrderMonitor:
                 (int(order_id), status, supply_id, now, now),
             )
 
+    def _parse_order(self, row: dict) -> FBSOrder:
+        return FBSOrder(
+            id=int(row["id"]),
+            article=str(row.get("article") or ""),
+            nm_id=int(row.get("nmId") or 0),
+            warehouse_id=int(row.get("warehouseId") or 0),
+            created_at=str(row.get("createdAt") or ""),
+            cargo_type=int(row.get("cargoType") or 0),
+            cross_border_type=int(row.get("crossBorderType") or 0),
+            offices=tuple(str(x) for x in (row.get("offices") or [])),
+        )
+
     async def _new_orders(self) -> list[FBSOrder]:
-        data = await self.wb._json("GET", f"{self.wb.MARKETPLACE_BASE}/api/v3/orders/new")
-        out = []
-        for row in (data or {}).get("orders", []):
-            if int(row.get("warehouseId") or 0) != self.warehouse_id:
-                continue
-            out.append(FBSOrder(
-                id=int(row["id"]), article=str(row.get("article") or ""), nm_id=int(row.get("nmId") or 0),
-                warehouse_id=int(row.get("warehouseId") or 0), created_at=str(row.get("createdAt") or ""),
-                cargo_type=int(row.get("cargoType") or 0), cross_border_type=int(row.get("crossBorderType") or 0),
-                offices=tuple(str(x) for x in (row.get("offices") or [])),
-            ))
-        return out
+        data = await self.wb._json(
+            "GET", f"{self.wb.MARKETPLACE_BASE}/api/v3/orders/new"
+        )
+        return [
+            self._parse_order(row)
+            for row in (data or {}).get("orders", [])
+            if int(row.get("warehouseId") or 0) == self.warehouse_id
+        ]
+
+    async def _orders_since(self, since: datetime) -> list[dict]:
+        now = datetime.now(timezone.utc)
+        since = since.astimezone(timezone.utc)
+        earliest = now - timedelta(days=30)
+        if since < earliest:
+            since = earliest
+
+        result: list[dict] = []
+        cursor = 0
+        seen: set[int] = set()
+        while True:
+            data = await self.wb._json(
+                "GET",
+                f"{self.wb.MARKETPLACE_BASE}/api/v3/orders",
+                params={
+                    "limit": 1000,
+                    "next": cursor,
+                    "dateFrom": int(since.timestamp()),
+                    "dateTo": int(now.timestamp()),
+                },
+            )
+            rows = (data or {}).get("orders", [])
+            result.extend(
+                row
+                for row in rows
+                if int(row.get("warehouseId") or 0) == self.warehouse_id
+            )
+            nxt = int((data or {}).get("next") or 0)
+            if not rows or len(rows) < 1000 or nxt == 0 or nxt == cursor or nxt in seen:
+                break
+            seen.add(nxt)
+            cursor = nxt
+        return result
+
+    async def _order_statuses(self, order_ids: list[int]) -> dict[int, str]:
+        statuses: dict[int, str] = {}
+        ids = list(dict.fromkeys(int(x) for x in order_ids))
+        for start in range(0, len(ids), 1000):
+            chunk = ids[start : start + 1000]
+            data = await self.wb._json(
+                "POST",
+                f"{self.wb.MARKETPLACE_BASE}/api/v3/orders/status",
+                json={"orders": chunk},
+            )
+            for row in (data or {}).get("orders", []):
+                statuses[int(row["id"])] = str(row.get("supplierStatus") or "")
+        return statuses
 
     async def _supplies(self) -> list[FBSSupply]:
         result: list[FBSSupply] = []
@@ -180,15 +240,100 @@ class OrderMonitor:
             await self.tg.broadcast(self.settings.telegram_chat_ids, self._text(order, supplies), reply_markup=self._keyboard(order, supplies))
             self._remember(order)
 
-    async def loop(self) -> None:
+    async def reconcile_since(self, since: datetime) -> tuple[int, int]:
+        rows = await self._orders_since(since)
+        unseen_rows = [row for row in rows if self._state(int(row["id"])) is None]
+        if not unseen_rows:
+            return 0, 0
+
+        statuses = await self._order_statuses([int(row["id"]) for row in unseen_rows])
+        new_orders = [
+            self._parse_order(row)
+            for row in unseen_rows
+            if statuses.get(int(row["id"])) == "new"
+        ]
+
+        supplies = None
+        if new_orders:
+            try:
+                supplies = await self._supplies()
+            except Exception:
+                log.exception("Could not load supplies during recovery")
+
+        recovered_new = 0
+        for order in sorted(new_orders, key=lambda o: (o.created_at, o.id)):
+            await self.tg.broadcast(
+                self.settings.telegram_chat_ids,
+                "🧭 Заказ найден при сверке после восстановления связи\n\n"
+                + self._text(order, supplies),
+                reply_markup=self._keyboard(order, supplies),
+            )
+            self._remember(order)
+            recovered_new += 1
+
+        processed = []
+        for row in unseen_rows:
+            order_id = int(row["id"])
+            status = statuses.get(order_id, "")
+            if status == "new":
+                continue
+            self._set_state(order_id, f"recovered:{status or 'unknown'}", str(row.get("supplyId") or "") or None)
+            processed.append((row, status or "unknown"))
+
+        if processed:
+            lines = [
+                "🧭 Во время отсутствия связи были заказы, которые уже успели изменить статус:",
+                "",
+            ]
+            for row, status in processed[:20]:
+                lines.append(
+                    f"• {row.get('article') or '—'} | заказ {row['id']} | статус: {status}"
+                )
+            if len(processed) > 20:
+                lines.append(f"… ещё {len(processed) - 20}")
+            lines.append("")
+            lines.append("Они сохранены в истории бота и повторно как новые не появятся.")
+            await self.tg.broadcast(
+                self.settings.telegram_chat_ids,
+                "\n".join(lines),
+            )
+
+        return recovered_new, len(processed)
+
+    async def poll_once(self, on_recovered: RecoveryHandler | None = None) -> None:
+        previous_raw = self.db.get_meta("marketplace_last_success")
+        previous: datetime | None = None
+        if previous_raw:
+            try:
+                previous = datetime.fromisoformat(previous_raw)
+                if previous.tzinfo is None:
+                    previous = previous.replace(tzinfo=timezone.utc)
+            except ValueError:
+                previous = None
+
+        await self.refresh()
+        recovered_at = datetime.now(timezone.utc)
+        threshold = max(120, int(self.settings.order_check_interval) * 3)
+
+        if (
+            previous is not None
+            and (recovered_at - previous).total_seconds() > threshold
+        ):
+            await self.reconcile_since(previous)
+            if on_recovered is not None:
+                await on_recovered(previous, recovered_at)
+
+        self.db.set_meta("marketplace_last_success", recovered_at.isoformat())
+
+    async def loop(self, on_recovered: RecoveryHandler | None = None) -> None:
         while True:
             await asyncio.sleep(self.settings.order_check_interval)
             try:
-                await self.refresh()
+                await self.poll_once(on_recovered)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("FBS order refresh failed")
+                log.exception("FBS order refresh/recovery failed")
 
     async def _finish(self, chat_id: int, message_id: int, original: str, status: str) -> None:
         text = f"{original.rstrip()}\n\n{status}" if original.strip() else status
@@ -216,13 +361,11 @@ class OrderMonitor:
         await self.wb._json("PATCH", f"{self.wb.MARKETPLACE_BASE}/api/marketplace/v3/supplies/{supply_id}/orders", json={"orders": [int(order_id)]})
 
     async def _one_box(self, supply_id: str) -> str:
-        data = await self.wb._json("GET", f"{self.wb.MARKETPLACE_BASE}/api/v3/supplies/{supply_id}/trbx")
-        boxes = [str(x["id"]) for x in (data or {}).get("trbxes", []) if x.get("id")]
-        if len(boxes) == 1:
-            return boxes[0]
-        if len(boxes) > 1:
-            raise RuntimeError(f"в новой поставке уже {len(boxes)} грузомест")
-        data = await self.wb._json("POST", f"{self.wb.MARKETPLACE_BASE}/api/v3/supplies/{supply_id}/trbx", json={"amount": 1})
+        data = await self.wb._json(
+            "POST",
+            f"{self.wb.MARKETPLACE_BASE}/api/v3/supplies/{supply_id}/trbx",
+            json={"amount": 1},
+        )
         ids = [str(x) for x in (data or {}).get("trbxIds", [])]
         if len(ids) != 1:
             raise RuntimeError("WB не вернул ID грузоместа")
