@@ -77,7 +77,14 @@ class SharedInventory:
                     "wb_auto", product.nm_id
                 )
                 quantity = self._bootstrap_wb_quantity(product)
-                if saved:
+                if (
+                    saved
+                    and int(
+                        self.wb_service.fbs_stock.get(
+                            product.nm_id, 0
+                        )
+                    ) == 0
+                ):
                     self.db.set_channel_suppressed(
                         "wb", sku, True
                     )
@@ -216,12 +223,34 @@ class SharedInventory:
                     wb_nm_quantities[product.nm_id] = int(local)
 
             if wb_quantities and self.wb_service.warehouse is not None:
-                await self.wb_service.wb.set_fbs_stocks(
-                    self.wb_service.warehouse.id,
-                    wb_quantities,
-                )
-                self.wb_service.fbs_stock.update(wb_nm_quantities)
-                self.db.update_many("fbs", wb_nm_quantities)
+                actual_wb_quantities = {
+                    chrt_id: quantity
+                    for chrt_id, quantity in wb_quantities.items()
+                    if self.wb_service.fbs_stock.get(
+                        next(
+                            product.nm_id
+                            for product in wb_by_sku.values()
+                            if chrt_id in product.chrt_ids
+                        ),
+                        0,
+                    )
+                    != quantity
+                }
+                if actual_wb_quantities:
+                    await self.wb_service.wb.set_fbs_stocks(
+                        self.wb_service.warehouse.id,
+                        actual_wb_quantities,
+                    )
+                    changed_nm = {
+                        product.nm_id: wb_nm_quantities[product.nm_id]
+                        for product in wb_by_sku.values()
+                        if any(
+                            chrt_id in actual_wb_quantities
+                            for chrt_id in product.chrt_ids
+                        )
+                    }
+                    self.wb_service.fbs_stock.update(changed_nm)
+                    self.db.update_many("fbs", changed_nm)
 
             if (
                 self.ozon_client is not None
@@ -236,14 +265,23 @@ class SharedInventory:
                         continue
                     ozon_quantities[sku] = int(local)
                 if ozon_quantities:
-                    await self.ozon_client.set_fbs_stocks(
-                        self.ozon_warehouse_id,
-                        ozon_quantities,
+                    current_ozon = self.db.get_channel_stock(
+                        "ozon_fbs", tuple(ozon_quantities)
                     )
-                    for sku, quantity in ozon_quantities.items():
-                        self.db.set_channel_stock(
-                            "ozon_fbs", sku, quantity
+                    changed_ozon = {
+                        sku: quantity
+                        for sku, quantity in ozon_quantities.items()
+                        if current_ozon.get(sku) != quantity
+                    }
+                    if changed_ozon:
+                        await self.ozon_client.set_fbs_stocks(
+                            self.ozon_warehouse_id,
+                            changed_ozon,
                         )
+                        for sku, quantity in changed_ozon.items():
+                            self.db.set_channel_stock(
+                                "ozon_fbs", sku, quantity
+                            )
 
     async def sync_loop(self, interval: int = 60) -> None:
         while True:
@@ -324,6 +362,11 @@ class SharedInventory:
             if int(quantity) == 0
             else {product.chrt_ids[0]: int(quantity)}
         )
+        current = int(
+            self.wb_service.fbs_stock.get(product.nm_id, 0)
+        )
+        if current == int(quantity):
+            return
         await self.wb_service.wb.set_fbs_stocks(
             self.wb_service.warehouse.id,
             quantities,
@@ -343,6 +386,11 @@ class SharedInventory:
                 "Ozon FBS warehouse is not configured"
             )
         if sku not in self.db.get_channel_catalog("ozon"):
+            return
+        current = self.db.get_channel_stock(
+            "ozon_fbs", (sku,)
+        ).get(sku)
+        if current == int(quantity):
             return
         await self.ozon_client.set_fbs_stocks(
             self.ozon_warehouse_id,
