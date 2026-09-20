@@ -152,8 +152,10 @@ class OrderMonitor:
             cursor = nxt
         return result
 
-    async def _order_statuses(self, order_ids: list[int]) -> dict[int, str]:
-        statuses: dict[int, str] = {}
+    async def _order_status_details(
+        self, order_ids: list[int]
+    ) -> dict[int, tuple[str, str]]:
+        statuses: dict[int, tuple[str, str]] = {}
         ids = list(dict.fromkeys(int(x) for x in order_ids))
         for start in range(0, len(ids), 1000):
             chunk = ids[start : start + 1000]
@@ -163,8 +165,46 @@ class OrderMonitor:
                 json={"orders": chunk},
             )
             for row in (data or {}).get("orders", []):
-                statuses[int(row["id"])] = str(row.get("supplierStatus") or "")
+                statuses[int(row["id"])] = (
+                    str(row.get("supplierStatus") or ""),
+                    str(row.get("wbStatus") or ""),
+                )
         return statuses
+
+    async def _order_statuses(self, order_ids: list[int]) -> dict[int, str]:
+        details = await self._order_status_details(order_ids)
+        return {order_id: status[0] for order_id, status in details.items()}
+
+    async def _sync_crm_order_statuses(self, orders: list[FBSOrder]) -> None:
+        current_ids = {order.id for order in orders}
+        for order in orders:
+            self.db.set_order_runtime_status(order.id, "new", "waiting")
+
+        rows = self.db.list_order_state(limit=1000)
+        candidates: list[int] = []
+        for row in rows:
+            order_id = int(row["order_id"])
+            if order_id in current_ids:
+                continue
+            supplier_status = row.get("supplier_status")
+            local_status = str(row.get("status") or "")
+            if supplier_status in {"new", "confirm"}:
+                candidates.append(order_id)
+            elif supplier_status is None and local_status in {
+                "notified",
+                "assigned",
+                "skipped",
+            }:
+                candidates.append(order_id)
+
+        if not candidates:
+            return
+
+        details = await self._order_status_details(candidates)
+        for order_id, (supplier_status, wb_status) in details.items():
+            self.db.set_order_runtime_status(
+                order_id, supplier_status, wb_status
+            )
 
     async def _supplies(self) -> list[FBSSupply]:
         result: list[FBSSupply] = []
@@ -231,16 +271,25 @@ class OrderMonitor:
         orders = await self._new_orders()
         self.current_new_orders = {order.id: order for order in orders}
         unseen = [o for o in orders if self._state(o.id) is None]
-        if not unseen:
-            return
-        supplies = None
+
+        if unseen:
+            supplies = None
+            try:
+                supplies = await self._supplies()
+            except Exception:
+                log.exception("Could not load supplies")
+            for order in sorted(unseen, key=lambda o: (o.created_at, o.id)):
+                await self.tg.broadcast(
+                    self.settings.telegram_chat_ids,
+                    self._text(order, supplies),
+                    reply_markup=self._keyboard(order, supplies),
+                )
+                self._remember(order)
+
         try:
-            supplies = await self._supplies()
+            await self._sync_crm_order_statuses(orders)
         except Exception:
-            log.exception("Could not load supplies")
-        for order in sorted(unseen, key=lambda o: (o.created_at, o.id)):
-            await self.tg.broadcast(self.settings.telegram_chat_ids, self._text(order, supplies), reply_markup=self._keyboard(order, supplies))
-            self._remember(order)
+            log.exception("Could not refresh CRM order statuses")
 
     async def audit_pending(self, chat_id: int) -> int:
         """Show currently-new orders that still need a decision in this chat."""
