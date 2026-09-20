@@ -52,24 +52,62 @@ class WildberriesClient:
             "Content-Type": "application/json",
         }
 
-    async def _json(self, method: str, url: str, *, token: str | None = None, **kwargs):
+    async def _json(
+        self,
+        method: str,
+        url: str,
+        *,
+        token: str | None = None,
+        retry_transient: bool = False,
+        **kwargs,
+    ):
         headers = self._headers(token or self._token)
-        async with self.session.request(method, url, headers=headers, **kwargs) as response:
-            text = await response.text()
-            if response.status == 204:
-                return None
-            if response.status >= 400:
-                raise WBAPIError(f"WB API {response.status}: {text[:800]}")
-            if not text:
-                return None
+        attempts = 3 if retry_transient else 1
+        for attempt in range(attempts):
             try:
-                return await response.json(content_type=None)
-            except Exception as exc:
-                raise WBAPIError(f"WB API returned invalid JSON: {text[:800]}") from exc
+                async with self.session.request(
+                    method, url, headers=headers, **kwargs
+                ) as response:
+                    text = await response.text()
+                    if response.status == 204:
+                        return None
+                    if response.status >= 400:
+                        raise WBAPIError(
+                            f"WB API {response.status}: {text[:800]}"
+                        )
+                    if not text:
+                        return None
+                    try:
+                        return await response.json(content_type=None)
+                    except Exception as exc:
+                        raise WBAPIError(
+                            f"WB API returned invalid JSON: {text[:800]}"
+                        ) from exc
+            except (
+                aiohttp.ClientConnectionError,
+                asyncio.TimeoutError,
+            ) as exc:
+                if attempt + 1 >= attempts:
+                    raise
+                delay = 0.5 * (2**attempt)
+                log.warning(
+                    "Transient WB network error on %s %s "
+                    "(attempt %d/%d): %s; retrying in %.1fs",
+                    method,
+                    url,
+                    attempt + 1,
+                    attempts,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        raise RuntimeError("unreachable")
 
     async def get_single_seller_warehouse(self) -> SellerWarehouse:
         data = await self._json(
-            "GET", f"{self.MARKETPLACE_BASE}/api/v3/warehouses"
+            "GET",
+            f"{self.MARKETPLACE_BASE}/api/v3/warehouses",
+            retry_transient=True,
         )
         if not isinstance(data, list):
             raise WBAPIError(f"Unexpected warehouses response: {data!r}")
@@ -93,7 +131,12 @@ class WildberriesClient:
                     "cursor": cursor,
                 }
             }
-            data = await self._json("POST", self.CONTENT_URL, json=payload)
+            data = await self._json(
+                "POST",
+                self.CONTENT_URL,
+                json=payload,
+                retry_transient=True,
+            )
             cards = (data or {}).get("cards", [])
             for card in cards:
                 nm_id = int(card["nmID"])
@@ -148,6 +191,7 @@ class WildberriesClient:
                 "POST",
                 f"{self.MARKETPLACE_BASE}/api/v3/stocks/{warehouse_id}",
                 json={"chrtIds": chunk},
+                retry_transient=True,
             )
             for item in (data or {}).get("stocks", []):
                 result[int(item["chrtId"])] = int(item.get("amount", 0))
@@ -192,6 +236,7 @@ class WildberriesClient:
                 "POST",
                 self.ANALYTICS_WB_STOCKS_URL,
                 json={"limit": limit, "offset": offset},
+                retry_transient=True,
             )
             items = ((data or {}).get("data") or {}).get("items", [])
             for item in items:
