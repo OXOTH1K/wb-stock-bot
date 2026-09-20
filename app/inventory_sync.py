@@ -38,6 +38,7 @@ class SharedStockSync:
         self._lock = asyncio.Lock()
 
     async def initialize(self) -> None:
+        self._migrate_legacy_wb_suppression()
         if self.ozon is None:
             return
         if self.ozon_warehouse_id is not None:
@@ -71,6 +72,25 @@ class SharedStockSync:
             "Найдено несколько OZON FBS-складов. "
             f"Укажите OZON_WAREHOUSE_ID в .env. Доступны: {ids}"
         )
+
+    def _migrate_legacy_wb_suppression(self) -> None:
+        saved = self.db.get_saved_fbs("wb_auto")
+        by_nm: set[int] = {int(nm_id) for nm_id, _ in saved}
+        for nm_id in by_nm:
+            product = self.service.products.get(nm_id)
+            if product is None:
+                continue
+            sku = str(product.vendor_code or "").strip()
+            if not sku:
+                continue
+            if int(self.service.fbs_stock.get(nm_id, 0)) != 0:
+                continue
+            self.db.set_channel_suppressed(
+                "wb",
+                sku,
+                True,
+                reason="legacy_wb_auto",
+            )
 
     def _wb_product(self, sku: str):
         clean = str(sku).strip()
@@ -178,10 +198,15 @@ class SharedStockSync:
                         f"• {sku}: было {change['before']}, "
                         f"заказано {change['requested']}, локально стало 0"
                     )
-                await self.tg.broadcast(
-                    self.settings.telegram_chat_ids,
-                    "\n".join(lines),
-                )
+                try:
+                    await self.tg.broadcast(
+                        self.settings.telegram_chat_ids,
+                        "\n".join(lines),
+                    )
+                except Exception:
+                    log.exception(
+                        "Could not send local-stock shortage warning"
+                    )
 
             return changes
 
@@ -306,14 +331,19 @@ class SharedStockSync:
                 raise RuntimeError(f"WB не знает артикул {sku}")
             if self.service.warehouse is None:
                 raise RuntimeError("WB FBS-склад не определён")
-            if len(product.chrt_ids) != 1:
+            if len(product.chrt_ids) != 1 and quantity > 0:
                 raise RuntimeError(
                     f"Нельзя автоматически синхронизировать WB {sku}: "
                     "у товара несколько chrtId"
                 )
+            quantities = (
+                {chrt_id: 0 for chrt_id in product.chrt_ids}
+                if quantity == 0
+                else {product.chrt_ids[0]: quantity}
+            )
             await self.wb.set_fbs_stocks(
                 self.service.warehouse.id,
-                {product.chrt_ids[0]: quantity},
+                quantities,
             )
             self.service.fbs_stock[product.nm_id] = quantity
             self.db.update_many("fbs", {product.nm_id: quantity})
