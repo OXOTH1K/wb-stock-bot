@@ -102,6 +102,18 @@ class StateDB:
         )
         self.conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS channel_catalog (
+                source TEXT NOT NULL,
+                sku TEXT NOT NULL,
+                title TEXT NOT NULL,
+                external_id TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (source, sku)
+            )
+            """
+        )
+        self.conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS crm_order_meta (
                 order_id INTEGER PRIMARY KEY,
                 assembled INTEGER NOT NULL DEFAULT 0,
@@ -506,6 +518,89 @@ class StateDB:
                 """,
                 (str(source), str(sku).strip(), quantity, now),
             )
+
+    def replace_channel_stock(
+        self, source: str, quantities: dict[str, int]
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        cleaned = {
+            str(sku).strip(): int(quantity)
+            for sku, quantity in quantities.items()
+            if str(sku).strip()
+        }
+        if any(quantity < 0 for quantity in cleaned.values()):
+            raise ValueError("Channel stock cannot be negative")
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM channel_stock WHERE source = ?",
+                (str(source),),
+            )
+            self.conn.executemany(
+                """
+                INSERT INTO channel_stock(source, sku, quantity, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (str(source), sku, quantity, now)
+                    for sku, quantity in cleaned.items()
+                ],
+            )
+
+    def replace_channel_catalog(
+        self,
+        source: str,
+        products: list[tuple[str, str, str]],
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        rows = []
+        seen: set[str] = set()
+        for sku, title, external_id in products:
+            clean_sku = str(sku).strip()
+            if not clean_sku or clean_sku in seen:
+                continue
+            seen.add(clean_sku)
+            rows.append(
+                (
+                    str(source),
+                    clean_sku,
+                    str(title or clean_sku),
+                    str(external_id or ""),
+                    now,
+                )
+            )
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM channel_catalog WHERE source = ?",
+                (str(source),),
+            )
+            self.conn.executemany(
+                """
+                INSERT INTO channel_catalog(
+                    source, sku, title, external_id, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+    def get_channel_catalog(self, source: str) -> dict[str, dict]:
+        rows = self.conn.execute(
+            """
+            SELECT sku, title, external_id
+            FROM channel_catalog
+            WHERE source = ?
+            ORDER BY sku
+            """,
+            (str(source),),
+        ).fetchall()
+        return {
+            str(sku): {
+                "sku": str(sku),
+                "title": str(title),
+                "external_id": str(external_id),
+            }
+            for sku, title, external_id in rows
+        }
 
     def set_order_runtime_status(
         self, order_id: int, supplier_status: str, wb_status: str = ""
