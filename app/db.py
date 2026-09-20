@@ -131,6 +131,31 @@ class StateDB:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS marketplace_stock_policy (
+                channel TEXT NOT NULL,
+                sku TEXT NOT NULL,
+                suppressed INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (channel, sku)
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_sale_event (
+                channel TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                sku TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                local_before INTEGER NOT NULL,
+                local_after INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (channel, event_id, sku)
+            )
+            """
+        )
         self.conn.commit()
 
     def get(self, source: str, nm_id: int) -> int | None:
@@ -601,6 +626,128 @@ class StateDB:
             }
             for sku, title, external_id in rows
         }
+
+    def local_stock_quantity(self, sku: str) -> int | None:
+        row = self.conn.execute(
+            "SELECT quantity FROM local_inventory WHERE sku = ?",
+            (str(sku).strip(),),
+        ).fetchone()
+        return None if row is None else int(row[0])
+
+    def is_channel_suppressed(self, channel: str, sku: str) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT suppressed
+            FROM marketplace_stock_policy
+            WHERE channel = ? AND sku = ?
+            """,
+            (str(channel), str(sku).strip()),
+        ).fetchone()
+        return False if row is None else bool(row[0])
+
+    def set_channel_suppressed(
+        self, channel: str, sku: str, suppressed: bool
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO marketplace_stock_policy(
+                    channel, sku, suppressed, updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(channel, sku) DO UPDATE SET
+                    suppressed = excluded.suppressed,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(channel),
+                    str(sku).strip(),
+                    1 if suppressed else 0,
+                    now,
+                ),
+            )
+
+    def record_inventory_sale(
+        self,
+        channel: str,
+        event_id: str,
+        sku: str,
+        quantity: int,
+    ) -> tuple[bool, int, int]:
+        sku = str(sku).strip()
+        quantity = max(0, int(quantity))
+        if not sku or quantity <= 0:
+            current = self.local_stock_quantity(sku) or 0
+            return False, current, current
+
+        existing = self.conn.execute(
+            """
+            SELECT local_before, local_after
+            FROM inventory_sale_event
+            WHERE channel = ? AND event_id = ? AND sku = ?
+            """,
+            (str(channel), str(event_id), sku),
+        ).fetchone()
+        if existing is not None:
+            return False, int(existing[0]), int(existing[1])
+
+        before_row = self.conn.execute(
+            "SELECT quantity FROM local_inventory WHERE sku = ?",
+            (sku,),
+        ).fetchone()
+        before = int(before_row[0]) if before_row is not None else 0
+        after = max(0, before - quantity)
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO local_inventory(sku, quantity, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(sku) DO UPDATE SET
+                    quantity = excluded.quantity,
+                    updated_at = excluded.updated_at
+                """,
+                (sku, after, now),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO inventory_sale_event(
+                    channel, event_id, sku, quantity,
+                    local_before, local_after, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(channel),
+                    str(event_id),
+                    sku,
+                    quantity,
+                    before,
+                    after,
+                    now,
+                ),
+            )
+            if after != before:
+                self.conn.execute(
+                    """
+                    INSERT INTO inventory_movement(
+                        sku, delta, before_qty, after_qty,
+                        reason, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sku,
+                        after - before,
+                        before,
+                        after,
+                        f"sale:{channel}:{event_id}",
+                        now,
+                    ),
+                )
+        return True, before, after
 
     def set_order_runtime_status(
         self, order_id: int, supplier_status: str, wb_status: str = ""
