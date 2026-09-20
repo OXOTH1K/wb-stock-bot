@@ -4,7 +4,6 @@ import base64
 import ipaddress
 import logging
 import secrets
-from dataclasses import asdict
 from typing import Any
 
 from aiohttp import web
@@ -12,7 +11,6 @@ from aiohttp import web
 from .config import Settings
 from .crm_ui import INDEX_HTML
 from .db import StateDB
-from .orders import OrderMonitor
 from .service import StockMonitorService
 
 log = logging.getLogger(__name__)
@@ -23,12 +21,10 @@ class CRMServer:
         self,
         settings: Settings,
         service: StockMonitorService,
-        orders: OrderMonitor,
         db: StateDB,
     ):
         self.settings = settings
         self.service = service
-        self.orders = orders
         self.db = db
         try:
             self._allowed_networks = tuple(
@@ -73,9 +69,6 @@ class CRMServer:
                 web.post("/api/inventory/adjust", self.adjust_inventory),
                 web.post("/api/inventory/set", self.set_inventory),
                 web.get("/api/inventory/movements", self.inventory_movements),
-                web.get("/api/orders/wb", self.wb_orders),
-                web.post("/api/orders/wb/assembled", self.set_wb_order_assembled),
-                web.get("/api/orders/ozon", self.ozon_orders),
             ]
         )
 
@@ -288,91 +281,3 @@ class CRMServer:
             {"items": self.db.list_inventory_movements(limit)}
         )
 
-    async def wb_orders(self, request: web.Request) -> web.Response:
-        rows = self.db.list_order_state(limit=300)
-        by_id = {int(row["order_id"]): row for row in rows}
-
-        active_new = set(self.orders.current_new_orders)
-        active_supply = dict(self.orders.current_supply_orders)
-        active_ids = active_new | set(active_supply)
-
-        items = []
-        for order_id in active_ids:
-            row = by_id.get(order_id)
-            live = self.orders.current_new_orders.get(order_id)
-            if row is None:
-                row = {
-                    "order_id": order_id,
-                    "article": live.article if live is not None else "",
-                    "nm_id": live.nm_id if live is not None else 0,
-                    "status": "notified" if live is not None else "assigned",
-                    "supply_id": active_supply.get(order_id),
-                    "first_seen_at": (
-                        live.created_at if live is not None else ""
-                    ),
-                    "updated_at": (
-                        live.created_at if live is not None else ""
-                    ),
-                    "assembled": False,
-                    "supplier_status": (
-                        "new" if order_id in active_new else "confirm"
-                    ),
-                    "wb_status": "waiting",
-                }
-            else:
-                row = dict(row)
-                if live is not None and not row.get("article"):
-                    row["article"] = live.article
-                row["supplier_status"] = (
-                    "new" if order_id in active_new else "confirm"
-                )
-                row["is_new"] = order_id in active_new
-                if order_id in active_supply:
-                    row["supply_id"] = active_supply[order_id]
-                    row["status"] = "assigned"
-            row["is_new"] = order_id in active_new
-            items.append(row)
-
-        items.sort(
-            key=lambda row: (
-                0 if row["is_new"] else 1,
-                str(row.get("first_seen_at") or ""),
-                int(row["order_id"]),
-            )
-        )
-        return web.json_response({"items": items})
-
-    async def set_wb_order_assembled(
-        self, request: web.Request
-    ) -> web.Response:
-        data = await self._payload(request)
-        try:
-            order_id = int(data.get("order_id"))
-        except (TypeError, ValueError) as exc:
-            raise web.HTTPBadRequest(
-                text='{"error":"order_id must be an integer"}',
-                content_type="application/json",
-            ) from exc
-        assembled = bool(data.get("assembled"))
-        known_ids = {
-            int(row["order_id"])
-            for row in self.db.list_order_state(limit=1000)
-        } | set(self.orders.current_new_orders)
-        if order_id not in known_ids:
-            raise web.HTTPNotFound(
-                text='{"error":"unknown order"}',
-                content_type="application/json",
-            )
-        self.db.set_order_assembled(order_id, assembled)
-        return web.json_response(
-            {"order_id": order_id, "assembled": assembled}
-        )
-
-    async def ozon_orders(self, request: web.Request) -> web.Response:
-        return web.json_response(
-            {
-                "connected": False,
-                "items": [],
-                "message": "OZON API integration is not configured yet",
-            }
-        )
