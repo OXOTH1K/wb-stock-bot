@@ -64,6 +64,25 @@ class FakeOzon:
     async def get_fbs_stocks(self):
         return dict(self.stocks)
 
+    async def get_stock_breakdown(self):
+        return dict(self.stocks), {
+            "SKU-A": 0,
+            "OZON-ONLY": 0,
+        }
+
+    async def get_fbs_warehouses(self):
+        return [
+            {
+                "warehouse_id": 77,
+                "name": "Ozon FBS",
+            }
+        ]
+
+    async def set_fbs_stocks(self, warehouse_id, quantities):
+        self.stocks.update(
+            {str(k): int(v) for k, v in quantities.items()}
+        )
+
     async def get_awaiting_packaging(self):
         return list(self.postings)
 
