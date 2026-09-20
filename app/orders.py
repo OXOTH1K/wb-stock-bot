@@ -47,6 +47,7 @@ class OrderMonitor:
         self.db = db
         self.warehouse_id = int(warehouse_id)
         self._lock = asyncio.Lock()
+        self.current_new_orders: dict[int, FBSOrder] = {}
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
@@ -228,6 +229,7 @@ class OrderMonitor:
 
     async def refresh(self) -> None:
         orders = await self._new_orders()
+        self.current_new_orders = {order.id: order for order in orders}
         unseen = [o for o in orders if self._state(o.id) is None]
         if not unseen:
             return
@@ -434,6 +436,7 @@ class OrderMonitor:
                         await self._show_choices(chat_id, message_id, order)
                         return True
                     await self._add_order(supply.id, order.id)
+                    self.current_new_orders.pop(order.id, None)
                     self._set_state(order.id, "assigned", supply.id)
                     await self._finish(chat_id, message_id, original, f"✅ Заказ добавлен в поставку {supply.name} ({supply.id}).")
                     return True
@@ -450,6 +453,7 @@ class OrderMonitor:
                         except Exception:
                             log.exception("Could not remove empty supply %s", supply_id)
                         raise
+                    self.current_new_orders.pop(order.id, None)
                     self._set_state(order.id, "assigned", supply_id)
                     try:
                         await self._one_box(supply_id)

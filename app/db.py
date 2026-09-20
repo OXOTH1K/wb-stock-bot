@@ -67,6 +67,48 @@ class StateDB:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS local_inventory (
+                sku TEXT PRIMARY KEY,
+                quantity INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_movement (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sku TEXT NOT NULL,
+                delta INTEGER NOT NULL,
+                before_qty INTEGER NOT NULL,
+                after_qty INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS channel_stock (
+                source TEXT NOT NULL,
+                sku TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (source, sku)
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS crm_order_meta (
+                order_id INTEGER PRIMARY KEY,
+                assembled INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
     def get(self, source: str, nm_id: int) -> int | None:
@@ -307,6 +349,224 @@ class StateDB:
                 "DELETE FROM stock_decision WHERE nm_id = ?",
                 (int(nm_id),),
             )
+
+    def ensure_local_stock(self, sku: str, quantity: int) -> int:
+        sku = str(sku).strip()
+        quantity = max(0, int(quantity))
+        row = self.conn.execute(
+            "SELECT quantity FROM local_inventory WHERE sku = ?",
+            (sku,),
+        ).fetchone()
+        if row is not None:
+            return int(row[0])
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO local_inventory(sku, quantity, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (sku, quantity, now),
+            )
+            if quantity:
+                self.conn.execute(
+                    """
+                    INSERT INTO inventory_movement(
+                        sku, delta, before_qty, after_qty, reason, created_at
+                    )
+                    VALUES (?, ?, 0, ?, 'bootstrap', ?)
+                    """,
+                    (sku, quantity, quantity, now),
+                )
+        return quantity
+
+    def get_local_stock(self, skus: list[str] | tuple[str, ...]) -> dict[str, int]:
+        cleaned = [str(sku).strip() for sku in skus if str(sku).strip()]
+        if not cleaned:
+            return {}
+        placeholders = ",".join("?" for _ in cleaned)
+        rows = self.conn.execute(
+            f"SELECT sku, quantity FROM local_inventory WHERE sku IN ({placeholders})",
+            cleaned,
+        ).fetchall()
+        return {str(sku): int(quantity) for sku, quantity in rows}
+
+    def set_local_stock(self, sku: str, quantity: int, reason: str = "crm") -> int:
+        sku = str(sku).strip()
+        if not sku:
+            raise ValueError("SKU is required")
+        quantity = int(quantity)
+        if quantity < 0:
+            raise ValueError("Local stock cannot be negative")
+        row = self.conn.execute(
+            "SELECT quantity FROM local_inventory WHERE sku = ?",
+            (sku,),
+        ).fetchone()
+        before = int(row[0]) if row is not None else 0
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO local_inventory(sku, quantity, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(sku) DO UPDATE SET
+                    quantity = excluded.quantity,
+                    updated_at = excluded.updated_at
+                """,
+                (sku, quantity, now),
+            )
+            if quantity != before:
+                self.conn.execute(
+                    """
+                    INSERT INTO inventory_movement(
+                        sku, delta, before_qty, after_qty, reason, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (sku, quantity - before, before, quantity, str(reason), now),
+                )
+        return quantity
+
+    def adjust_local_stock(self, sku: str, delta: int, reason: str = "crm") -> int:
+        sku = str(sku).strip()
+        if not sku:
+            raise ValueError("SKU is required")
+        row = self.conn.execute(
+            "SELECT quantity FROM local_inventory WHERE sku = ?",
+            (sku,),
+        ).fetchone()
+        before = int(row[0]) if row is not None else 0
+        after = before + int(delta)
+        if after < 0:
+            raise ValueError("Local stock cannot be negative")
+        return self.set_local_stock(sku, after, reason=reason)
+
+    def list_inventory_movements(self, limit: int = 50) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT sku, delta, before_qty, after_qty, reason, created_at
+            FROM inventory_movement
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+        return [
+            {
+                "sku": str(sku),
+                "delta": int(delta),
+                "before": int(before),
+                "after": int(after),
+                "reason": str(reason),
+                "created_at": str(created_at),
+            }
+            for sku, delta, before, after, reason, created_at in rows
+        ]
+
+    def get_channel_stock(
+        self, source: str, skus: list[str] | tuple[str, ...]
+    ) -> dict[str, int]:
+        cleaned = [str(sku).strip() for sku in skus if str(sku).strip()]
+        if not cleaned:
+            return {}
+        placeholders = ",".join("?" for _ in cleaned)
+        rows = self.conn.execute(
+            f"""
+            SELECT sku, quantity
+            FROM channel_stock
+            WHERE source = ? AND sku IN ({placeholders})
+            """,
+            [str(source), *cleaned],
+        ).fetchall()
+        return {str(sku): int(quantity) for sku, quantity in rows}
+
+    def set_channel_stock(self, source: str, sku: str, quantity: int) -> None:
+        quantity = int(quantity)
+        if quantity < 0:
+            raise ValueError("Channel stock cannot be negative")
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO channel_stock(source, sku, quantity, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(source, sku) DO UPDATE SET
+                    quantity = excluded.quantity,
+                    updated_at = excluded.updated_at
+                """,
+                (str(source), str(sku).strip(), quantity, now),
+            )
+
+    def set_order_assembled(self, order_id: int, assembled: bool) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO crm_order_meta(order_id, assembled, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    assembled = excluded.assembled,
+                    updated_at = excluded.updated_at
+                """,
+                (int(order_id), 1 if assembled else 0, now),
+            )
+
+    def get_order_assembled(self, order_ids: list[int] | tuple[int, ...]) -> dict[int, bool]:
+        ids = [int(order_id) for order_id in order_ids]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT order_id, assembled
+            FROM crm_order_meta
+            WHERE order_id IN ({placeholders})
+            """,
+            ids,
+        ).fetchall()
+        return {int(order_id): bool(assembled) for order_id, assembled in rows}
+
+    def list_order_state(self, limit: int = 200) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                s.order_id,
+                s.article,
+                s.nm_id,
+                s.status,
+                s.supply_id,
+                s.first_seen_at,
+                s.updated_at,
+                COALESCE(m.assembled, 0)
+            FROM order_state AS s
+            LEFT JOIN crm_order_meta AS m ON m.order_id = s.order_id
+            ORDER BY s.first_seen_at DESC, s.order_id DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 1000)),),
+        ).fetchall()
+        return [
+            {
+                "order_id": int(order_id),
+                "article": str(article),
+                "nm_id": int(nm_id),
+                "status": str(status),
+                "supply_id": None if supply_id is None else str(supply_id),
+                "first_seen_at": str(first_seen_at),
+                "updated_at": str(updated_at),
+                "assembled": bool(assembled),
+            }
+            for (
+                order_id,
+                article,
+                nm_id,
+                status,
+                supply_id,
+                first_seen_at,
+                updated_at,
+                assembled,
+            ) in rows
+        ]
 
     def get_meta(self, key: str) -> str | None:
         row = self.conn.execute(
