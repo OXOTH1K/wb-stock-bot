@@ -8,6 +8,7 @@ from contextlib import AsyncExitStack
 from .config import Settings
 from .crm import CRMServer
 from .db import StateDB
+from .inventory_sync import SharedInventory
 from .orders import OrderMonitor
 from .ozon import OzonIntegration
 from .ozon_client import OzonClient
@@ -41,11 +42,7 @@ async def amain() -> None:
             if service.warehouse is None:
                 raise RuntimeError("Seller warehouse is not initialized")
 
-            orders = OrderMonitor(
-                settings, wb, tg, db, service.warehouse.id
-            )
-            await orders.poll_once(service.reconcile_after_gap)
-
+            ozon_client: OzonClient | None = None
             ozon: OzonIntegration | None = None
             if settings.ozon_client_id and settings.ozon_api_key:
                 ozon_client = await stack.enter_async_context(
@@ -55,14 +52,41 @@ async def amain() -> None:
                         settings.http_timeout,
                     )
                 )
+
+            inventory = SharedInventory(
+                db,
+                service,
+                ozon_client=ozon_client,
+                ozon_warehouse_id=settings.ozon_warehouse_id,
+            )
+            service.inventory = inventory
+
+            if ozon_client is not None:
                 ozon = OzonIntegration(
-                    settings, ozon_client, tg, db
+                    settings,
+                    ozon_client,
+                    tg,
+                    db,
+                    inventory=inventory,
                 )
                 try:
-                    await ozon.initialize()
+                    await ozon.refresh_catalog_and_stocks()
                 except Exception:
                     logging.getLogger(__name__).exception(
-                        "Ozon initial sync failed; background loops will retry"
+                        "Ozon initial stock sync failed; background loop will retry"
+                    )
+                try:
+                    warehouse_id = (
+                        await inventory.configure_ozon_warehouse()
+                    )
+                    logging.getLogger(__name__).info(
+                        "Ozon FBS warehouse selected: %s",
+                        warehouse_id,
+                    )
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Ozon FBS warehouse selection failed; "
+                        "stock writes will retry after configuration"
                     )
                 logging.getLogger(__name__).info(
                     "Ozon integration enabled"
@@ -72,7 +96,40 @@ async def amain() -> None:
                     "Ozon integration disabled: credentials are not configured"
                 )
 
-            crm = CRMServer(settings, service, db)
+            inventory.bootstrap_local_inventory()
+
+            orders = OrderMonitor(
+                settings,
+                wb,
+                tg,
+                db,
+                service.warehouse.id,
+                sale_handler=inventory.apply_sale,
+            )
+            await orders.poll_once(service.reconcile_after_gap)
+
+            if ozon is not None:
+                try:
+                    await ozon.refresh_orders()
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Ozon initial order sync failed; background loop will retry"
+                    )
+
+            try:
+                await inventory.sync_all()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Initial shared inventory sync failed; "
+                    "periodic sync will retry"
+                )
+
+            crm = CRMServer(
+                settings,
+                service,
+                db,
+                inventory=inventory,
+            )
             await crm.start()
 
             async def message_handler(
@@ -185,6 +242,10 @@ async def amain() -> None:
                 asyncio.create_task(
                     orders.loop(service.reconcile_after_gap),
                     name="fbs-orders",
+                ),
+                asyncio.create_task(
+                    inventory.sync_loop(60),
+                    name="shared-inventory-sync",
                 ),
             ]
             if ozon is not None:
