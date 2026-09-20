@@ -70,8 +70,8 @@ class FakeOzon:
     async def get_posting(self, posting_number):
         return self.details[posting_number]
 
-    async def ship_fbs(self, posting_number):
-        self.shipped.append(posting_number)
+    async def ship_fbs(self, posting):
+        self.shipped.append(posting.posting_number)
 
 
 class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -182,8 +182,10 @@ class ParsingOzonClient(OzonClient):
     def __init__(self, responses):
         super().__init__("client", "key")
         self.responses = list(responses)
+        self.requests = []
 
     async def _json(self, path, payload=None):
+        self.requests.append((path, payload))
         if not self.responses:
             raise AssertionError((path, payload))
         expected_path, response = self.responses.pop(0)
@@ -230,6 +232,59 @@ class OzonClientParsingTests(unittest.IsolatedAsyncioTestCase):
         stocks = await client.get_fbs_stocks()
 
         self.assertEqual(stocks, {"SKU-A": 7})
+
+    async def test_ship_sends_single_package_and_verifies_status(self):
+        client = ParsingOzonClient(
+            [
+                ("/v4/posting/fbs/ship", {"result": ["A"]}),
+                (
+                    "/v3/posting/fbs/get",
+                    {
+                        "result": {
+                            "posting_number": "A",
+                            "status": "awaiting_deliver",
+                            "products": [
+                                {
+                                    "offer_id": "SKU-A",
+                                    "name": "Alpha",
+                                    "quantity": 2,
+                                    "sku": 101,
+                                }
+                            ],
+                        }
+                    },
+                ),
+            ]
+        )
+        posting = OzonPosting(
+            posting_number="A",
+            order_number="1",
+            status="awaiting_packaging",
+            cutoff="",
+            warehouse_id=1,
+            products=(
+                OzonPostingProduct("SKU-A", "Alpha", 2, 101),
+            ),
+        )
+
+        await client.ship_fbs(posting)
+
+        path, payload = client.requests[0]
+        self.assertEqual(path, "/v4/posting/fbs/ship")
+        self.assertEqual(payload["posting_number"], "A")
+        self.assertEqual(
+            payload["packages"],
+            [
+                {
+                    "products": [
+                        {"product_id": 101, "quantity": 2}
+                    ]
+                }
+            ],
+        )
+        self.assertEqual(
+            client.requests[1][0], "/v3/posting/fbs/get"
+        )
 
     def test_posting_parser_accepts_offer_id_and_product_offer_id(self):
         first = OzonClient._parse_posting(
