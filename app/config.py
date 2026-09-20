@@ -29,6 +29,7 @@ class Settings:
     ozon_api_key: str
     ozon_order_check_interval: int
     ozon_stock_check_interval: int
+    ozon_warehouse_id: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -111,5 +112,8 @@ class Settings:
                     "OZON_STOCK_CHECK_INTERVAL",
                     os.getenv("FBS_CHECK_INTERVAL", "300"),
                 )
+            ),
+            ozon_warehouse_id=int(
+                os.getenv("OZON_WAREHOUSE_ID", "0") or "0"
             ),
         )
