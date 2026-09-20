@@ -184,6 +184,12 @@ class CRMServer:
                 wb_warehouses = int(
                     self.service.wb_stock.get(wb_product.nm_id, 0)
                 )
+                if not fbs_suppressed and wb_fbs == 0:
+                    fbs_suppressed = bool(
+                        self.db.get_saved_product_fbs(
+                            "wb_auto", wb_product.nm_id
+                        )
+                    )
 
             ozon_fbs: int | None = None
             ozon_fbs_suppressed = self.db.is_channel_suppressed(
