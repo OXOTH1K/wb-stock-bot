@@ -27,6 +27,7 @@ class Settings:
     crm_allowed_networks: tuple[str, ...]
     ozon_client_id: str
     ozon_api_key: str
+    ozon_warehouse_id: int | None
     ozon_order_check_interval: int
     ozon_stock_check_interval: int
 
@@ -51,6 +52,12 @@ class Settings:
 
         ozon_client_id = os.getenv("OZON_CLIENT_ID", "").strip()
         ozon_api_key = os.getenv("OZON_API_KEY", "").strip()
+        raw_ozon_warehouse_id = os.getenv("OZON_WAREHOUSE_ID", "").strip()
+        ozon_warehouse_id = (
+            int(raw_ozon_warehouse_id)
+            if raw_ozon_warehouse_id
+            else None
+        )
         if bool(ozon_client_id) != bool(ozon_api_key):
             raise RuntimeError(
                 "OZON_CLIENT_ID and OZON_API_KEY must be set together"
@@ -100,6 +107,7 @@ class Settings:
             crm_allowed_networks=crm_allowed_networks,
             ozon_client_id=ozon_client_id,
             ozon_api_key=ozon_api_key,
+            ozon_warehouse_id=ozon_warehouse_id,
             ozon_order_check_interval=int(
                 os.getenv(
                     "OZON_ORDER_CHECK_INTERVAL",
