@@ -38,6 +38,7 @@ class FakeOzon:
             OzonProduct("OZON-ONLY", 202, "Ozon Only"),
         ]
         self.stocks = {"SKU-A": 5, "OZON-ONLY": 4}
+        self.fbo_stocks = {"SKU-A": 0, "OZON-ONLY": 0}
         self.postings = [
             OzonPosting(
                 posting_number="12345678-0001-1",
@@ -63,6 +64,9 @@ class FakeOzon:
 
     async def get_fbs_stocks(self):
         return dict(self.stocks)
+
+    async def get_stock_breakdown(self):
+        return dict(self.stocks), dict(self.fbo_stocks)
 
     async def get_awaiting_packaging(self):
         return list(self.postings)
@@ -232,6 +236,89 @@ class OzonClientParsingTests(unittest.IsolatedAsyncioTestCase):
         stocks = await client.get_fbs_stocks()
 
         self.assertEqual(stocks, {"SKU-A": 7})
+
+    async def test_stock_breakdown_separates_fbs_and_fbo(self):
+        client = ParsingOzonClient(
+            [
+                (
+                    "/v4/product/info/stocks",
+                    {
+                        "items": [
+                            {
+                                "offer_id": "SKU-A",
+                                "stocks": [
+                                    {"type": "fbs", "present": 3},
+                                    {"type": "fbo", "present": 8},
+                                ],
+                            }
+                        ],
+                        "cursor": "",
+                        "has_next": False,
+                    },
+                )
+            ]
+        )
+
+        fbs, fbo = await client.get_stock_breakdown()
+
+        self.assertEqual(fbs, {"SKU-A": 3})
+        self.assertEqual(fbo, {"SKU-A": 8})
+
+    async def test_warehouse_list_uses_v2_endpoint(self):
+        client = ParsingOzonClient(
+            [
+                (
+                    "/v2/warehouse/list",
+                    {
+                        "warehouses": [
+                            {
+                                "warehouse_id": 501,
+                                "name": "Main FBS",
+                                "is_rfbs": False,
+                                "status": "active",
+                            }
+                        ]
+                    },
+                )
+            ]
+        )
+
+        rows = await client.get_fbs_warehouses()
+
+        self.assertEqual(client.requests[0][0], "/v2/warehouse/list")
+        self.assertEqual(rows[0]["warehouse_id"], 501)
+
+    async def test_stock_write_uses_offer_id_without_fake_product_id(self):
+        client = ParsingOzonClient(
+            [
+                (
+                    "/v2/products/stocks",
+                    {
+                        "result": [
+                            {
+                                "offer_id": "SKU-A",
+                                "updated": True,
+                                "errors": [],
+                            }
+                        ]
+                    },
+                )
+            ]
+        )
+
+        await client.set_fbs_stocks(501, {"SKU-A": 2})
+
+        payload = client.requests[0][1]
+        self.assertEqual(
+            payload["stocks"],
+            [
+                {
+                    "offer_id": "SKU-A",
+                    "stock": 2,
+                    "warehouse_id": 501,
+                }
+            ],
+        )
 
     async def test_posting_list_uses_ozon_max_limit_100(self):
         client = ParsingOzonClient(
