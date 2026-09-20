@@ -283,7 +283,7 @@ class OzonIntegration:
                     )
                     return True
 
-                await self.client.ship_fbs(posting_number)
+                await self.client.ship_fbs(posting)
                 self.current_pending.pop(posting_number, None)
                 self._set_state(posting_number, "assembled")
                 await self._finish(
