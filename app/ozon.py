@@ -504,7 +504,16 @@ class OzonIntegration:
                 and reason is None
             ):
                 keyboard = self._stock_keyboard(sku, "zero")
-                if keyboard is not None:
+                if (
+                    keyboard is not None
+                    and not self._stock_decision_matches(
+                        sku,
+                        "zero",
+                        new_fbs,
+                        new_fbo,
+                        "notified",
+                    )
+                ):
                     await self.tg.broadcast(
                         self.settings.telegram_chat_ids,
                         (
@@ -518,15 +527,30 @@ class OzonIntegration:
                         ),
                         reply_markup=keyboard,
                     )
+                    self._save_stock_decision(
+                        sku,
+                        "zero",
+                        new_fbs,
+                        new_fbo,
+                        "notified",
+                    )
 
             if (
-                int(old_fbs) + int(old_fbo) > 0
-                and new_fbs + new_fbo == 0
+                new_fbs + new_fbo == 0
                 and local <= 0
                 and reason != "mass"
             ):
                 keyboard = self._depletion_keyboard(sku)
-                if keyboard is not None:
+                if (
+                    keyboard is not None
+                    and not self._stock_decision_matches(
+                        sku,
+                        "add",
+                        new_fbs,
+                        new_fbo,
+                        "notified",
+                    )
+                ):
                     await self.tg.broadcast(
                         self.settings.telegram_chat_ids,
                         (
@@ -538,6 +562,13 @@ class OzonIntegration:
                         ),
                         reply_markup=keyboard,
                     )
+                    self._save_stock_decision(
+                        sku,
+                        "add",
+                        new_fbs,
+                        new_fbo,
+                        "notified",
+                    )
 
             if (
                 int(old_fbo) > 0
@@ -546,7 +577,16 @@ class OzonIntegration:
                 and local > 0
             ):
                 keyboard = self._stock_keyboard(sku, "restore")
-                if keyboard is not None:
+                if (
+                    keyboard is not None
+                    and not self._stock_decision_matches(
+                        sku,
+                        "restore",
+                        new_fbs,
+                        new_fbo,
+                        "notified",
+                    )
+                ):
                     await self.tg.broadcast(
                         self.settings.telegram_chat_ids,
                         (
@@ -557,6 +597,13 @@ class OzonIntegration:
                             "Вернуть этот актуальный остаток на OZON FBS?"
                         ),
                         reply_markup=keyboard,
+                    )
+                    self._save_stock_decision(
+                        sku,
+                        "restore",
+                        new_fbs,
+                        new_fbo,
+                        "notified",
                     )
 
     async def audit_actionable_stocks(
