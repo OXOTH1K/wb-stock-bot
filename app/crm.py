@@ -150,8 +150,11 @@ class CRMServer:
         }
         ozon_catalog = self.db.get_channel_catalog("ozon")
         all_skus = sorted(set(wb_by_sku) | set(ozon_catalog))
-        ozon_stock = self.db.get_channel_stock(
+        ozon_fbs_stock = self.db.get_channel_stock(
             "ozon_fbs", tuple(all_skus)
+        )
+        ozon_fbo_stock = self.db.get_channel_stock(
+            "ozon_fbo", tuple(all_skus)
         )
 
         for sku in all_skus:
@@ -161,7 +164,7 @@ class CRMServer:
                     wb_product.nm_id
                 )
             else:
-                initial = int(ozon_stock.get(sku, 0))
+                initial = int(ozon_fbs_stock.get(sku, 0))
             self.db.ensure_local_stock(sku, initial)
 
         local = self.db.get_local_stock(tuple(all_skus))
@@ -192,11 +195,13 @@ class CRMServer:
                     )
 
             ozon_fbs: int | None = None
+            ozon_fbo: int | None = None
             ozon_fbs_suppressed = self.db.is_channel_suppressed(
                 "ozon", sku
             )
             if ozon_product is not None:
-                ozon_fbs = int(ozon_stock.get(sku, 0))
+                ozon_fbs = int(ozon_fbs_stock.get(sku, 0))
+                ozon_fbo = int(ozon_fbo_stock.get(sku, 0))
 
             drift_channels: list[str] = []
             if (
@@ -232,6 +237,7 @@ class CRMServer:
                     "wb_fbs": wb_fbs,
                     "wb_warehouses": wb_warehouses,
                     "ozon_fbs": ozon_fbs,
+                    "ozon_fbo": ozon_fbo,
                     "wb_exists": wb_product is not None,
                     "ozon_exists": ozon_product is not None,
                     "fbs_suppressed": fbs_suppressed,
@@ -256,6 +262,9 @@ class CRMServer:
                     ),
                     "ozon_fbs": sum(
                         item["ozon_fbs"] or 0 for item in items
+                    ),
+                    "ozon_fbo": sum(
+                        item["ozon_fbo"] or 0 for item in items
                     ),
                     "drift": sum(
                         1
@@ -321,6 +330,18 @@ class CRMServer:
                 text=web.json_response({"error": str(exc)}).text,
                 content_type="application/json",
             ) from exc
+        except RuntimeError as exc:
+            raise web.HTTPBadGateway(
+                text=web.json_response(
+                    {
+                        "error": (
+                            "Локальный остаток сохранён, но синхронизация "
+                            f"WB/OZON не завершена: {exc}"
+                        )
+                    }
+                ).text,
+                content_type="application/json",
+            ) from exc
         return web.json_response({"sku": sku, "quantity": quantity})
 
     async def set_inventory(self, request: web.Request) -> web.Response:
@@ -350,6 +371,18 @@ class CRMServer:
         except ValueError as exc:
             raise web.HTTPBadRequest(
                 text=web.json_response({"error": str(exc)}).text,
+                content_type="application/json",
+            ) from exc
+        except RuntimeError as exc:
+            raise web.HTTPBadGateway(
+                text=web.json_response(
+                    {
+                        "error": (
+                            "Локальный остаток сохранён, но синхронизация "
+                            f"WB/OZON не завершена: {exc}"
+                        )
+                    }
+                ).text,
                 content_type="application/json",
             ) from exc
         return web.json_response({"sku": sku, "quantity": quantity})

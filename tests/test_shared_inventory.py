@@ -150,6 +150,47 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.ozon.writes, [])
 
+    async def test_manual_local_set_forces_marketplace_writes(self):
+        await self.shared.initialize()
+
+        await self.shared.set_local_stock(
+            "SKU-A", 3, reason="crm_set"
+        )
+
+        self.assertEqual(
+            self.wb.wb.writes,
+            [(7, {11: 3})],
+        )
+        self.assertEqual(
+            self.ozon.writes,
+            [("SKU-A", 3)],
+        )
+
+    async def test_manual_local_set_reports_marketplace_write_failure(self):
+        await self.shared.initialize()
+
+        async def fail_ozon_write(sku, quantity):
+            raise RuntimeError("write rejected")
+
+        self.ozon.set_fbs_stock = fail_ozon_write
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "OZON: write rejected",
+        ):
+            await self.shared.set_local_stock(
+                "SKU-A", 2, reason="crm_set"
+            )
+
+        self.assertEqual(
+            self.shared.local_quantity("SKU-A"),
+            2,
+        )
+        self.assertEqual(
+            self.wb.wb.writes[-1],
+            (7, {11: 2}),
+        )
+
     async def test_wb_suppression_only_zeros_wb(self):
         await self.shared.initialize()
 

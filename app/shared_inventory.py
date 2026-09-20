@@ -229,8 +229,14 @@ class SharedInventoryService:
                 sku, quantity, reason=reason
             )
             self._clear_wb_decisions(sku)
+            # An explicit local-stock edit is also an explicit request to
+            # republish that quantity. Force the marketplace writes even when
+            # our cached FBS value already matches: the cache can be stale if a
+            # manual marketplace edit happened between background refreshes.
             await self.sync_sku(
-                sku, raise_errors=False
+                sku,
+                raise_errors=True,
+                force=True,
             )
             return result
 
@@ -278,6 +284,7 @@ class SharedInventoryService:
         *,
         skip_channel: str | None = None,
         raise_errors: bool = True,
+        force: bool = False,
     ) -> None:
         sku = str(sku).strip()
         if not sku:
@@ -296,7 +303,7 @@ class SharedInventoryService:
                         product.nm_id, 0
                     )
                 )
-                if current != quantity:
+                if force or current != quantity:
                     try:
                         await self._write_wb(sku, quantity)
                     except Exception as exc:
@@ -311,7 +318,7 @@ class SharedInventoryService:
             current = self.db.get_channel_stock(
                 "ozon_fbs", (sku,)
             ).get(sku)
-            if current is None or int(current) != quantity:
+            if force or current is None or int(current) != quantity:
                 try:
                     await self._write_ozon(sku, quantity)
                 except Exception as exc:
