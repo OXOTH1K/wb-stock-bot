@@ -749,6 +749,20 @@ class StateDB:
                 )
         return True, before, after
 
+    def find_channel_sku_by_external_id(
+        self, source: str, external_id: str
+    ) -> str | None:
+        row = self.conn.execute(
+            """
+            SELECT sku
+            FROM channel_catalog
+            WHERE source = ? AND external_id = ?
+            LIMIT 1
+            """,
+            (str(source), str(external_id)),
+        ).fetchone()
+        return None if row is None else str(row[0])
+
     def set_order_runtime_status(
         self, order_id: int, supplier_status: str, wb_status: str = ""
     ) -> None:
