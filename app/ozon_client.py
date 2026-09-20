@@ -36,6 +36,7 @@ class OzonPosting:
     cutoff: str
     warehouse_id: int
     products: tuple[OzonPostingProduct, ...]
+    substatus: str = ""
 
 
 class OzonClient:
@@ -283,6 +284,7 @@ class OzonClient:
             ),
             warehouse_id=warehouse_id,
             products=tuple(products),
+            substatus=str(row.get("substatus") or ""),
         )
 
     async def get_awaiting_packaging(self) -> list[OzonPosting]:
@@ -356,11 +358,55 @@ class OzonClient:
             raise OzonAPIError(200, f"unexpected posting response: {data!r}")
         return self._parse_posting(row)
 
-    async def ship_fbs(self, posting_number: str) -> None:
+    async def ship_fbs(self, posting: OzonPosting) -> None:
+        products = [
+            {
+                "product_id": int(product.sku),
+                "quantity": int(product.quantity),
+            }
+            for product in posting.products
+            if int(product.quantity) > 0
+        ]
+        if not products:
+            raise OzonAPIError(
+                400,
+                "posting has no products that can be assembled",
+            )
+        if any(product["product_id"] <= 0 for product in products):
+            raise OzonAPIError(
+                400,
+                "Ozon SKU is missing for one or more posting products",
+            )
+
         await self._json(
             "/v4/posting/fbs/ship",
             {
-                "posting_number": str(posting_number),
+                "packages": [{"products": products}],
+                "posting_number": posting.posting_number,
                 "with": {"additional_data": False},
             },
+        )
+
+        # Ozon explicitly notes that HTTP 200 does not guarantee successful
+        # assembly. Verify the posting state without repeating the write call.
+        for attempt in range(3):
+            current = await self.get_posting(posting.posting_number)
+            if current.status != "awaiting_packaging":
+                if current.substatus == "ship_failed":
+                    raise OzonAPIError(
+                        409,
+                        "Ozon returned ship_failed after assembly request",
+                    )
+                return
+            if current.substatus == "ship_failed":
+                raise OzonAPIError(
+                    409,
+                    "Ozon returned ship_failed after assembly request",
+                )
+            if attempt < 2:
+                await asyncio.sleep(0.5)
+
+        raise OzonAPIError(
+            409,
+            "posting is still awaiting_packaging after assembly request",
         )
