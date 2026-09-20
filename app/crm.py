@@ -290,7 +290,11 @@ class CRMServer:
 
     async def wb_orders(self, request: web.Request) -> web.Response:
         rows = self.db.list_order_state(limit=300)
-        by_id = {int(row["order_id"]): row for row in rows}
+        by_id = {
+            int(row["order_id"]): row
+            for row in rows
+            if row.get("supplier_status") in {"new", "confirm"}
+        }
 
         for order in self.orders.current_new_orders.values():
             by_id.setdefault(
@@ -300,6 +304,8 @@ class CRMServer:
                     "article": order.article,
                     "nm_id": order.nm_id,
                     "status": "new",
+                    "supplier_status": "new",
+                    "wb_status": "waiting",
                     "supply_id": None,
                     "first_seen_at": order.created_at,
                     "updated_at": order.created_at,
@@ -307,18 +313,17 @@ class CRMServer:
                 },
             )
 
-        current_ids = set(self.orders.current_new_orders)
         items = list(by_id.values())
         items.sort(
             key=lambda row: (
-                0 if int(row["order_id"]) in current_ids else 1,
+                0 if row.get("supplier_status") == "new" else 1,
                 str(row.get("first_seen_at") or ""),
-            ),
-            reverse=False,
+            )
         )
+
         for row in items:
             order_id = int(row["order_id"])
-            row["is_new"] = order_id in current_ids
+            row["is_new"] = row.get("supplier_status") == "new"
             live = self.orders.current_new_orders.get(order_id)
             if live is not None and not row.get("article"):
                 row["article"] = live.article
