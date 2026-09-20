@@ -233,6 +233,27 @@ class OzonClientParsingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(stocks, {"SKU-A": 7})
 
+    async def test_posting_list_uses_ozon_max_limit_100(self):
+        client = ParsingOzonClient(
+            [
+                (
+                    "/v4/posting/fbs/list",
+                    {
+                        "postings": [],
+                        "cursor": "",
+                        "has_next": False,
+                    },
+                )
+            ]
+        )
+
+        await client.get_awaiting_packaging()
+
+        self.assertEqual(
+            client.requests[0][1]["limit"],
+            100,
+        )
+
     async def test_ship_sends_single_package_and_verifies_status(self):
         client = ParsingOzonClient(
             [
