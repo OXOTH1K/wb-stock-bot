@@ -362,20 +362,19 @@ class SharedInventoryService:
                 )
 
     async def restore_wb_mass(self) -> tuple[int, int]:
-        skus = self.db.clear_channel_suppressions_by_reason(
-            "wb", "mass"
-        )
+        skus = [
+            sku
+            for sku in self.db.list_channel_suppressions("wb")
+            if self.db.get_channel_suppression_reason(
+                "wb", sku
+            ) == "mass"
+        ]
         restored = 0
         total = 0
         for sku in skus:
             quantity = self.local_quantity(sku)
-            try:
-                await self._write_wb(sku, quantity)
-            except Exception:
-                self.db.set_channel_suppressed(
-                    "wb", sku, "mass"
-                )
-                raise
+            await self._write_wb(sku, quantity)
+            self.db.clear_channel_suppressed("wb", sku)
             restored += 1
             total += quantity
         return restored, total
