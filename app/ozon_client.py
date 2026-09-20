@@ -254,8 +254,12 @@ class OzonClient:
         return fbs
 
     async def get_fbs_warehouses(self) -> list[dict]:
-        data = await self._json("/v1/warehouse/list", {})
-        rows = (data or {}).get("result", [])
+        data = await self._json("/v2/warehouse/list", {})
+        rows = (data or {}).get("warehouses")
+        if not isinstance(rows, list):
+            rows = (data or {}).get("result", [])
+        if isinstance(rows, dict):
+            rows = rows.get("warehouses", [])
         if not isinstance(rows, list):
             return []
         result = []
@@ -281,7 +285,6 @@ class OzonClient:
         rows = [
             {
                 "offer_id": str(sku),
-                "product_id": 0,
                 "stock": int(quantity),
                 "warehouse_id": int(warehouse_id),
             }
