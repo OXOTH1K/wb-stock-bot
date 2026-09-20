@@ -186,12 +186,67 @@ class SharedInventory:
 
     async def sync_all(self) -> None:
         async with self._lock:
-            wb_skus = set(self._wb_by_sku())
-            ozon_skus = set(self.db.get_channel_catalog("ozon"))
-            for sku in sorted(wb_skus | ozon_skus):
-                if self.db.local_stock_quantity(sku) is None:
-                    continue
-                await self._sync_sku_locked(sku)
+            wb_by_sku = self._wb_by_sku()
+            ozon_catalog = self.db.get_channel_catalog("ozon")
+
+            wb_quantities: dict[int, int] = {}
+            wb_nm_quantities: dict[int, int] = {}
+            if self.wb_service.warehouse is not None:
+                for sku, product in wb_by_sku.items():
+                    if self.db.is_channel_suppressed("wb", sku):
+                        continue
+                    local = self.db.local_stock_quantity(sku)
+                    if local is None:
+                        continue
+                    if len(product.chrt_ids) != 1:
+                        log.warning(
+                            "Skipping automatic WB sync for %s: %d variants",
+                            sku,
+                            len(product.chrt_ids),
+                        )
+                        continue
+                    wb_quantities[product.chrt_ids[0]] = int(local)
+                    wb_nm_quantities[product.nm_id] = int(local)
+
+            if wb_quantities and self.wb_service.warehouse is not None:
+                await self.wb_service.wb.set_fbs_stocks(
+                    self.wb_service.warehouse.id,
+                    wb_quantities,
+                )
+                self.wb_service.fbs_stock.update(wb_nm_quantities)
+                self.db.update_many("fbs", wb_nm_quantities)
+
+            if (
+                self.ozon_client is not None
+                and self.ozon_warehouse_id > 0
+            ):
+                ozon_quantities: dict[str, int] = {}
+                for sku in ozon_catalog:
+                    if self.db.is_channel_suppressed("ozon", sku):
+                        continue
+                    local = self.db.local_stock_quantity(sku)
+                    if local is None:
+                        continue
+                    ozon_quantities[sku] = int(local)
+                if ozon_quantities:
+                    await self.ozon_client.set_fbs_stocks(
+                        self.ozon_warehouse_id,
+                        ozon_quantities,
+                    )
+                    for sku, quantity in ozon_quantities.items():
+                        self.db.set_channel_stock(
+                            "ozon_fbs", sku, quantity
+                        )
+
+    async def sync_loop(self, interval: int = 60) -> None:
+        while True:
+            await asyncio.sleep(max(30, int(interval)))
+            try:
+                await self.sync_all()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Shared inventory periodic sync failed")
 
     async def suppress_channel(
         self, channel: str, sku: str
