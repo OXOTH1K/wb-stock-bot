@@ -194,7 +194,7 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
             x for x in self.db.list_order_state()
             if x["order_id"] == 501
         )
-        self.assertEqual(row["supplier_status"], "new")
+        self.assertEqual(row["supplier_status"], "confirm")
         self.assertEqual(row["status"], "assigned")
         self.assertEqual(row["supply_id"], "WB-GI-42")
         self.assertEqual(tg.broadcasts, [])
