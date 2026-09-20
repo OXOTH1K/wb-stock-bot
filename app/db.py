@@ -131,6 +131,29 @@ class StateDB:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_sale_event (
+                channel TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                sku TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (channel, event_id, sku)
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS channel_suppression (
+                channel TEXT NOT NULL,
+                sku TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (channel, sku)
+            )
+            """
+        )
         self.conn.commit()
 
     def get(self, source: str, nm_id: int) -> int | None:
@@ -601,6 +624,127 @@ class StateDB:
             }
             for sku, title, external_id in rows
         }
+
+    def apply_sale_once(
+        self,
+        channel: str,
+        event_id: str,
+        sku: str,
+        quantity: int,
+    ) -> tuple[bool, int, int]:
+        channel = str(channel)
+        event_id = str(event_id)
+        sku = str(sku).strip()
+        quantity = max(0, int(quantity))
+        if not sku or quantity <= 0:
+            return False, 0, 0
+
+        row = self.conn.execute(
+            """
+            SELECT 1
+            FROM inventory_sale_event
+            WHERE channel = ? AND event_id = ? AND sku = ?
+            """,
+            (channel, event_id, sku),
+        ).fetchone()
+        current_row = self.conn.execute(
+            "SELECT quantity FROM local_inventory WHERE sku = ?",
+            (sku,),
+        ).fetchone()
+        before = int(current_row[0]) if current_row is not None else 0
+        if row is not None:
+            return False, before, before
+
+        after = max(0, before - quantity)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO inventory_sale_event(
+                    channel, event_id, sku, quantity, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (channel, event_id, sku, quantity, now),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO local_inventory(sku, quantity, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(sku) DO UPDATE SET
+                    quantity = excluded.quantity,
+                    updated_at = excluded.updated_at
+                """,
+                (sku, after, now),
+            )
+            if after != before:
+                self.conn.execute(
+                    """
+                    INSERT INTO inventory_movement(
+                        sku, delta, before_qty, after_qty, reason, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sku,
+                        after - before,
+                        before,
+                        after,
+                        f"sale:{channel}:{event_id}",
+                        now,
+                    ),
+                )
+        return True, before, after
+
+    def set_channel_suppressed(
+        self, channel: str, sku: str, reason: str = "marketplace_stock"
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO channel_suppression(
+                    channel, sku, reason, updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(channel, sku) DO UPDATE SET
+                    reason = excluded.reason,
+                    updated_at = excluded.updated_at
+                """,
+                (str(channel), str(sku).strip(), str(reason), now),
+            )
+
+    def clear_channel_suppressed(self, channel: str, sku: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                """
+                DELETE FROM channel_suppression
+                WHERE channel = ? AND sku = ?
+                """,
+                (str(channel), str(sku).strip()),
+            )
+
+    def is_channel_suppressed(self, channel: str, sku: str) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1
+            FROM channel_suppression
+            WHERE channel = ? AND sku = ?
+            """,
+            (str(channel), str(sku).strip()),
+        ).fetchone()
+        return row is not None
+
+    def list_channel_suppressions(self, channel: str) -> set[str]:
+        rows = self.conn.execute(
+            """
+            SELECT sku
+            FROM channel_suppression
+            WHERE channel = ?
+            """,
+            (str(channel),),
+        ).fetchall()
+        return {str(row[0]) for row in rows}
 
     def set_order_runtime_status(
         self, order_id: int, supplier_status: str, wb_status: str = ""
