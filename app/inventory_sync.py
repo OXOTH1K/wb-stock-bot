@@ -79,6 +79,17 @@ class SharedStockSync:
                 return product
         return None
 
+    def resolve_wb_sku(
+        self, article: str, nm_id: int
+    ) -> str:
+        clean = str(article or "").strip()
+        if clean:
+            return clean
+        product = self.service.products.get(int(nm_id))
+        if product is None:
+            return ""
+        return str(product.vendor_code or "").strip()
+
     def channel_exists(self, channel: str, sku: str) -> bool:
         if channel == "wb":
             return self._wb_product(sku) is not None
