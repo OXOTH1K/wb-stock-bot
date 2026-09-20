@@ -392,6 +392,67 @@ class SharedInventoryService:
             total += quantity
         return restored, total
 
+    async def suppress_ozon_mass(self) -> tuple[int, int]:
+        if self.ozon is None:
+            raise RuntimeError("OZON integration is not configured")
+        catalog = self.db.get_channel_catalog("ozon")
+        if not catalog:
+            return 0, 0
+
+        existing = self.db.list_channel_suppressions("ozon")
+        marked: list[str] = []
+        for sku in sorted(catalog):
+            if sku in existing:
+                continue
+            self.db.set_channel_suppressed(
+                "ozon", sku, "mass"
+            )
+            marked.append(sku)
+
+        quantities = {sku: 0 for sku in catalog}
+        try:
+            await self.ozon.set_fbs_stocks(quantities)
+        except Exception:
+            for sku in marked:
+                if self.db.get_channel_suppression_reason(
+                    "ozon", sku
+                ) == "mass":
+                    self.db.clear_channel_suppressed(
+                        "ozon", sku
+                    )
+            raise
+        return len(quantities), sum(
+            int(value)
+            for value in self.db.get_channel_stock(
+                "ozon_fbs", tuple(catalog)
+            ).values()
+        )
+
+    async def restore_ozon_mass(self) -> tuple[int, int]:
+        if self.ozon is None:
+            raise RuntimeError("OZON integration is not configured")
+        skus = [
+            sku
+            for sku in self.db.list_channel_suppressions("ozon")
+            if self.db.get_channel_suppression_reason(
+                "ozon", sku
+            )
+            == "mass"
+        ]
+        if not skus:
+            return 0, 0
+
+        quantities = {
+            sku: self.local_quantity(sku)
+            for sku in skus
+        }
+        await self.ozon.set_fbs_stocks(quantities)
+        for sku in skus:
+            self.db.clear_channel_suppressed(
+                "ozon", sku
+            )
+        return len(quantities), sum(quantities.values())
+
     async def reconcile_all(self) -> None:
         for sku in sorted(self.all_skus()):
             await self.sync_sku(
