@@ -96,7 +96,9 @@ class OzonIntegration:
     async def _resolve_warehouse(self) -> int | None:
         if self.warehouse_id is not None:
             return self.warehouse_id
-        configured = self.settings.ozon_warehouse_id
+        configured = getattr(
+            self.settings, "ozon_warehouse_id", None
+        )
         if configured is not None:
             self.warehouse_id = int(configured)
             return self.warehouse_id
