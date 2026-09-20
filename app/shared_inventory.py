@@ -51,6 +51,11 @@ class SharedInventoryService:
             self.db.get_local_stock((str(sku),)).get(str(sku), 0)
         )
 
+    def _clear_wb_decisions(self, sku: str) -> None:
+        product = self._wb_by_sku().get(str(sku))
+        if product is not None:
+            self.db.clear_stock_decisions(product.nm_id)
+
     def is_suppressed(self, channel: str, sku: str) -> bool:
         return self.db.is_channel_suppressed(channel, sku)
 
@@ -168,6 +173,7 @@ class SharedInventoryService:
                 if not applied:
                     continue
                 changed[clean_sku] = after
+                self._clear_wb_decisions(clean_sku)
                 if before < int(quantity):
                     log.warning(
                         "Local inventory underflow prevented for %s: "
@@ -223,6 +229,7 @@ class SharedInventoryService:
             result = self.db.set_local_stock(
                 sku, quantity, reason=reason
             )
+            self._clear_wb_decisions(sku)
             await self.sync_sku(
                 sku, raise_errors=False
             )
