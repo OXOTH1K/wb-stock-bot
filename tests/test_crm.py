@@ -123,17 +123,13 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
             """
         )
         self.db.conn.commit()
-        self.orders.current_new_orders = {
-            501: SimpleNamespace(
-                id=501, article="SKU-A", nm_id=100,
-                created_at="2026-09-20T10:00:00Z"
-            )
-        }
+        self.db.set_order_runtime_status(501, "confirm", "waiting")
 
         response = await self.client.get("/api/orders/wb")
         data = await response.json()
         self.assertEqual(data["items"][0]["supply_id"], "WB-GI-1")
-        self.assertTrue(data["items"][0]["is_new"])
+        self.assertFalse(data["items"][0]["is_new"])
+        self.assertEqual(data["items"][0]["supplier_status"], "confirm")
         self.assertFalse(data["items"][0]["assembled"])
 
         response = await self.client.post(
@@ -146,6 +142,40 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         data = await response.json()
         row = next(x for x in data["items"] if x["order_id"] == 501)
         self.assertTrue(row["assembled"])
+
+
+    async def test_wb_orders_hide_complete_and_canceled_orders(self):
+        rows = [
+            (601, "SKU-A", 100, "assigned", "WB-GI-1"),
+            (602, "SKU-B", 200, "assigned", "WB-GI-2"),
+            (603, "SKU-A", 100, "notified", None),
+        ]
+        for order_id, article, nm_id, status, supply_id in rows:
+            self.db.conn.execute(
+                """
+                INSERT INTO order_state(
+                    order_id, article, nm_id, status, supply_id,
+                    first_seen_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    order_id, article, nm_id, status, supply_id,
+                    "2026-09-20T10:00:00+00:00",
+                    "2026-09-20T10:01:00+00:00",
+                ),
+            )
+        self.db.conn.commit()
+        self.db.set_order_runtime_status(601, "confirm", "waiting")
+        self.db.set_order_runtime_status(602, "complete", "waiting")
+        self.db.set_order_runtime_status(603, "cancel", "canceled")
+
+        response = await self.client.get("/api/orders/wb")
+        data = await response.json()
+        ids = {row["order_id"] for row in data["items"]}
+
+        self.assertEqual(ids, {601})
+        self.assertEqual(data["items"][0]["supplier_status"], "confirm")
 
     async def test_ozon_orders_are_placeholder(self):
         response = await self.client.get("/api/orders/ozon")
