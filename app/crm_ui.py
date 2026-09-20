@@ -162,16 +162,16 @@ function renderOrders() {
   const q=document.getElementById('ordersSearch').value.trim().toLowerCase();
   const rows=orderRows.filter(x => !q || String(x.order_id).includes(q) || x.article.toLowerCase().includes(q));
   if(!rows.length){document.getElementById('ordersBody').innerHTML='<div class="empty">Нет заказов, готовых к сборке или находящихся на сборке</div>';return;}
-  let html='<div class="table-wrap"><table><thead><tr><th>Заказ</th><th>Артикул</th><th>WB</th><th>Состояние бота</th><th>Поставка</th><th>Собран</th><th>Обновлён</th></tr></thead><tbody>';
-  for(const x of rows){
+  let html='<div class="table-wrap"><table><thead><tr><th>№</th><th>Заказ</th><th>Артикул</th><th>WB</th><th>Состояние бота</th><th>Поставка</th><th>Собран</th><th>Обновлён</th></tr></thead><tbody>';
+  rows.forEach((x,index)=>{
     const wb=x.supplier_status==='new'
       ? '<span class="badge warn">готов к сборке</span>'
       : '<span class="badge ok">собирается</span>';
-    html+='<tr><td class="qty">'+esc(x.order_id)+'</td><td class="sku">'+esc(x.article||'—')+'</td><td>'+wb+'</td>'+
+    html+='<tr><td class="qty">'+(index+1)+'</td><td class="qty">'+esc(x.order_id)+'</td><td class="sku">'+esc(x.article||'—')+'</td><td>'+wb+'</td>'+
       '<td>'+esc(x.status)+'</td><td>'+(x.supply_id?'<span class="badge ok">'+esc(x.supply_id)+'</span>':'<span class="muted">—</span>')+'</td>'+
       '<td><label class="toggle"><input type="checkbox" '+(x.assembled?'checked':'')+' onchange="setAssembled('+x.order_id+',this.checked)"> '+(x.assembled?'да':'нет')+'</label></td>'+
       '<td class="muted">'+esc(formatTime(x.updated_at))+'</td></tr>';
-  }
+  });
   html+='</tbody></table></div>'; document.getElementById('ordersBody').innerHTML=html;
 }
 async function setAssembled(orderId, assembled){

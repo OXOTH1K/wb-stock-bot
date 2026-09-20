@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from aiohttp.test_utils import TestClient, TestServer
 
 from app.crm import CRMServer
+from app.crm_ui import INDEX_HTML
 from app.db import StateDB
 from app.models import Product
 
@@ -209,6 +210,10 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["supplier_status"], "confirm")
         self.assertEqual(row["status"], "assigned")
         self.assertEqual(row["supply_id"], "WB-GI-REAL")
+
+    def test_wb_orders_table_has_sequential_number_column(self):
+        self.assertIn("<th>№</th>", INDEX_HTML)
+        self.assertIn("(index+1)", INDEX_HTML)
 
     async def test_ozon_orders_are_placeholder(self):
         response = await self.client.get("/api/orders/ozon")
