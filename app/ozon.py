@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from .config import Settings
 from .db import StateDB
+from .inventory_sync import SharedInventory
 from .ozon_client import OzonClient, OzonPosting
 from .telegram import TelegramBot
 
@@ -19,11 +20,13 @@ class OzonIntegration:
         client: OzonClient,
         tg: TelegramBot,
         db: StateDB,
+        inventory: SharedInventory | None = None,
     ):
         self.settings = settings
         self.client = client
         self.tg = tg
         self.db = db
+        self.inventory = inventory
         self._lock = asyncio.Lock()
         self.current_pending: dict[str, OzonPosting] = {}
         self._ensure_schema()
@@ -87,10 +90,21 @@ class OzonIntegration:
         await self.refresh_orders()
 
     async def refresh_catalog_and_stocks(self) -> None:
-        catalog, stocks = await asyncio.gather(
+        catalog, breakdown = await asyncio.gather(
             self.client.get_catalog(),
-            self.client.get_fbs_stocks(),
+            self.client.get_stock_breakdown(),
         )
+        fbs_stocks, fbo_stocks = breakdown
+
+        previous_fbo = self.db.get_channel_stock(
+            "ozon_fbo",
+            tuple(
+                product.offer_id
+                for product in catalog
+                if product.offer_id
+            ),
+        )
+
         self.db.replace_channel_catalog(
             "ozon",
             [
@@ -102,7 +116,129 @@ class OzonIntegration:
                 for product in catalog
             ],
         )
-        self.db.replace_channel_stock("ozon_fbs", stocks)
+        self.db.replace_channel_stock("ozon_fbs", fbs_stocks)
+        self.db.replace_channel_stock("ozon_fbo", fbo_stocks)
+
+        await self._handle_fbo_transitions(
+            previous_fbo,
+            fbo_stocks,
+            fbs_stocks,
+        )
+
+    async def _apply_sale(self, posting: OzonPosting) -> None:
+        if self.inventory is None:
+            return
+        try:
+            await self.inventory.apply_sale(
+                "ozon",
+                posting.posting_number,
+                [
+                    (product.offer_id, product.quantity)
+                    for product in posting.products
+                    if product.offer_id and product.quantity > 0
+                ],
+            )
+        except Exception:
+            log.exception(
+                "Could not apply shared inventory sale for Ozon posting %s",
+                posting.posting_number,
+            )
+
+    def _catalog_external_id(self, sku: str) -> str | None:
+        row = self.db.get_channel_catalog("ozon").get(sku)
+        if not row:
+            return None
+        value = str(row.get("external_id") or "").strip()
+        return value or None
+
+    async def _handle_fbo_transitions(
+        self,
+        previous_fbo: dict[str, int],
+        current_fbo: dict[str, int],
+        current_fbs: dict[str, int],
+    ) -> None:
+        if self.inventory is None:
+            return
+
+        for sku, new_qty in current_fbo.items():
+            if sku not in previous_fbo:
+                continue
+            old_qty = int(previous_fbo.get(sku, 0))
+            new_qty = int(new_qty)
+
+            if old_qty == 0 and new_qty > 0:
+                if (
+                    int(current_fbs.get(sku, 0)) <= 0
+                    or self.inventory.is_suppressed("ozon", sku)
+                ):
+                    continue
+                external_id = self._catalog_external_id(sku)
+                if not external_id:
+                    continue
+                local = self.inventory.local_quantity(sku)
+                await self.tg.broadcast(
+                    self.settings.telegram_chat_ids,
+                    (
+                        "🔵 Товар появился на складе OZON\n"
+                        f"Артикул продавца: {sku}\n"
+                        f"Основной склад: {local} шт.\n"
+                        f"OZON FBO: было {old_qty} шт. → стало {new_qty} шт.\n\n"
+                        "Обнулить FBS только на OZON?"
+                    ),
+                    reply_markup={
+                        "inline_keyboard": [[
+                            {
+                                "text": "Обнулить OZON FBS",
+                                "callback_data": (
+                                    f"ozstock:{external_id}:zero"
+                                ),
+                            },
+                            {
+                                "text": "Не обнулять",
+                                "callback_data": (
+                                    f"ozstock:{external_id}:skipzero"
+                                ),
+                            },
+                        ]]
+                    },
+                )
+                continue
+
+            if (
+                old_qty > 0
+                and new_qty == 0
+                and self.inventory.is_suppressed("ozon", sku)
+            ):
+                external_id = self._catalog_external_id(sku)
+                if not external_id:
+                    continue
+                local = self.inventory.local_quantity(sku)
+                await self.tg.broadcast(
+                    self.settings.telegram_chat_ids,
+                    (
+                        "🔵 Товар закончился на складе OZON\n"
+                        f"Артикул продавца: {sku}\n"
+                        "OZON FBO: 0 шт.\n"
+                        f"Актуальный основной склад: {local} шт.\n\n"
+                        "Вернуть этот актуальный остаток на OZON FBS?"
+                    ),
+                    reply_markup={
+                        "inline_keyboard": [[
+                            {
+                                "text": f"Вернуть {local} шт.",
+                                "callback_data": (
+                                    f"ozstock:{external_id}:restore"
+                                ),
+                            },
+                            {
+                                "text": "Не возвращать",
+                                "callback_data": (
+                                    f"ozstock:{external_id}:skiprestore"
+                                ),
+                            },
+                        ]]
+                    },
+                )
 
     @staticmethod
     def _keyboard(posting: OzonPosting) -> dict:
@@ -130,7 +266,7 @@ class OzonIntegration:
     @staticmethod
     def _text(posting: OzonPosting) -> str:
         lines = [
-            "🟦 Новый FBS-заказ OZON",
+            "🔵 Новый FBS-заказ OZON",
             f"Отправление: {posting.posting_number}",
         ]
         if posting.order_number:
@@ -170,6 +306,7 @@ class OzonIntegration:
         for posting in postings:
             if self._state(posting.posting_number) is not None:
                 continue
+            await self._apply_sale(posting)
             await self._notify(posting)
             self._remember(posting.posting_number)
 
@@ -219,6 +356,89 @@ class OzonIntegration:
         except Exception:
             await self.tg.send_message(chat_id, status)
 
+    async def _handle_stock_callback(
+        self,
+        chat_id: int,
+        message_id: int,
+        data: str,
+        original: str,
+    ) -> bool:
+        if self.inventory is None:
+            return True
+        _, external_id, action = data.split(":", 2)
+        sku = self.db.find_channel_sku_by_external_id(
+            "ozon", external_id
+        )
+        if not sku:
+            await self._finish(
+                chat_id,
+                message_id,
+                original,
+                "⚠️ Товар OZON больше не найден в каталоге.",
+            )
+            return True
+
+        fbo = self.db.get_channel_stock(
+            "ozon_fbo", (sku,)
+        ).get(sku, 0)
+
+        if action == "skipzero":
+            await self._finish(
+                chat_id,
+                message_id,
+                original,
+                "⏭ OZON FBS оставлен без изменений.",
+            )
+            return True
+        if action == "skiprestore":
+            await self._finish(
+                chat_id,
+                message_id,
+                original,
+                "⏭ OZON FBS пока остаётся обнулённым.",
+            )
+            return True
+        if action == "zero":
+            if int(fbo) <= 0:
+                await self._finish(
+                    chat_id,
+                    message_id,
+                    original,
+                    "⚠️ Обнуление отменено: на OZON FBO уже нет остатка.",
+                )
+                return True
+            await self.inventory.suppress_channel("ozon", sku)
+            await self._finish(
+                chat_id,
+                message_id,
+                original,
+                "✅ OZON FBS обнулён. WB FBS не изменялся.",
+            )
+            return True
+        if action == "restore":
+            if int(fbo) > 0:
+                await self._finish(
+                    chat_id,
+                    message_id,
+                    original,
+                    "⚠️ Восстановление отменено: товар снова есть на OZON FBO.",
+                )
+                return True
+            quantity = await self.inventory.restore_channel(
+                "ozon", sku
+            )
+            await self._finish(
+                chat_id,
+                message_id,
+                original,
+                (
+                    "✅ На OZON FBS восстановлен актуальный "
+                    f"остаток основного склада: {quantity} шт."
+                ),
+            )
+            return True
+        return True
+
     async def handle_callback(
         self,
         chat_id: int,
@@ -226,13 +446,24 @@ class OzonIntegration:
         data: str,
         original: str = "",
     ) -> bool:
-        if not data.startswith("ozonord:"):
+        if not (
+            data.startswith("ozonord:")
+            or data.startswith("ozstock:")
+        ):
             return False
         if chat_id not in self.settings.telegram_chat_ids:
             return True
 
         try:
             async with self._lock:
+                if data.startswith("ozstock:"):
+                    return await self._handle_stock_callback(
+                        chat_id,
+                        message_id,
+                        data,
+                        original,
+                    )
+
                 _, posting_number, action = data.split(":", 2)
                 state = self._state(posting_number)
                 if state == "assembled":
