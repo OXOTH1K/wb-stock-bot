@@ -565,10 +565,10 @@ class StockMonitorService:
         _, page, pages, _ = self._stock_page_meta(page)
         buttons = []
         if page > 1:
-            buttons.append({"text": "◀️", "callback_data": f"stockswb:{page - 1}"})
-        buttons.append({"text": f"{page}/{pages}", "callback_data": "stockswb:noop"})
+            buttons.append({"text": "◀️", "callback_data": f"stocks:{page - 1}"})
+        buttons.append({"text": f"{page}/{pages}", "callback_data": "stocks:noop"})
         if page < pages:
-            buttons.append({"text": "▶️", "callback_data": f"stockswb:{page + 1}"})
+            buttons.append({"text": "▶️", "callback_data": f"stocks:{page + 1}"})
         return {"inline_keyboard": [buttons]}
 
     async def _send_stocks_page(self, chat_id: int, page: int) -> None:
