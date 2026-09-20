@@ -226,6 +226,9 @@ class StockMonitorService:
         if product is None:
             self.db.delete_pending_alert(alert_key)
             return
+        shared_inventory = getattr(
+            self, "shared_inventory", None
+        )
 
         if alert_type == "wb_appearance":
             fbs_qty = self.fbs_stock.get(nm_id, 0)
@@ -235,15 +238,15 @@ class StockMonitorService:
                 fbs_qty <= 0
                 or wb_qty <= 0
                 or (
-                    self.shared_inventory is not None
-                    and self.shared_inventory.is_suppressed("wb", sku)
+                    shared_inventory is not None
+                    and shared_inventory.is_suppressed("wb", sku)
                 )
             ):
                 self.db.delete_pending_alert(alert_key)
                 return
             local_qty = (
-                self.shared_inventory.local_quantity(sku)
-                if self.shared_inventory is not None
+                shared_inventory.local_quantity(sku)
+                if shared_inventory is not None
                 else fbs_qty
             )
             text = (
@@ -261,12 +264,12 @@ class StockMonitorService:
                 return
             sku = product.vendor_code or f"WB-{nm_id}"
             if (
-                self.shared_inventory is not None
+                shared_inventory is not None
                 and self.db.get_channel_suppression_reason(
                     "wb", sku
                 ) == "marketplace_stock"
             ):
-                local_qty = self.shared_inventory.local_quantity(sku)
+                local_qty = shared_inventory.local_quantity(sku)
                 if local_qty <= 0:
                     self.db.clear_channel_suppressed("wb", sku)
                     self.db.clear_saved_product_fbs("wb_auto", nm_id)
