@@ -19,6 +19,11 @@ class Settings:
     order_check_interval: int
     stocks_page_size: int
     http_timeout: int
+    crm_enabled: bool
+    crm_host: str
+    crm_port: int
+    crm_user: str
+    crm_password: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -39,6 +44,24 @@ class Settings:
                 if item:
                     chat_ids.add(int(item))
 
+        crm_enabled = os.getenv("CRM_ENABLED", "1").strip().lower() not in {
+            "0", "false", "no", "off"
+        }
+        crm_host = os.getenv("CRM_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        crm_port = int(os.getenv("CRM_PORT", "8080"))
+        crm_user = os.getenv("CRM_USER", "").strip()
+        crm_password = os.getenv("CRM_PASSWORD", "").strip()
+        if bool(crm_user) != bool(crm_password):
+            raise RuntimeError("CRM_USER and CRM_PASSWORD must be set together")
+        if (
+            crm_enabled
+            and crm_host not in {"127.0.0.1", "localhost", "::1"}
+            and not (crm_user and crm_password)
+        ):
+            raise RuntimeError(
+                "CRM_USER and CRM_PASSWORD are required when CRM_HOST is not localhost"
+            )
+
         return cls(
             wb_token=wb_token,
             telegram_bot_token=telegram_bot_token,
@@ -50,4 +73,9 @@ class Settings:
             order_check_interval=int(os.getenv("ORDER_CHECK_INTERVAL", "30")),
             stocks_page_size=int(os.getenv("STOCKS_PAGE_SIZE", "30")),
             http_timeout=int(os.getenv("HTTP_TIMEOUT", "30")),
+            crm_enabled=crm_enabled,
+            crm_host=crm_host,
+            crm_port=crm_port,
+            crm_user=crm_user,
+            crm_password=crm_password,
         )
