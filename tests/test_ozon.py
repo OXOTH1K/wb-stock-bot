@@ -112,6 +112,60 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.db.close()
         self.tmp.cleanup()
 
+    async def test_auto_selects_only_active_fbs_warehouse(self):
+        async def warehouses():
+            return [
+                {
+                    "warehouse_id": 10,
+                    "name": "Old archived",
+                    "status": "disabled",
+                },
+                {
+                    "warehouse_id": 77,
+                    "name": "Current FBS",
+                    "status": "created",
+                },
+                {
+                    "warehouse_id": 99,
+                    "name": "Blocked",
+                    "status": "blocked",
+                },
+            ]
+
+        self.client.get_fbs_warehouses = warehouses
+
+        warehouse_id = await self.ozon._resolve_warehouse()
+
+        self.assertEqual(warehouse_id, 77)
+        self.assertEqual(self.ozon.warehouse_id, 77)
+
+    async def test_multiple_active_fbs_warehouses_still_require_configuration(self):
+        async def warehouses():
+            return [
+                {
+                    "warehouse_id": 10,
+                    "name": "FBS A",
+                    "status": "created",
+                },
+                {
+                    "warehouse_id": 20,
+                    "name": "FBS B",
+                    "status": "created",
+                },
+                {
+                    "warehouse_id": 30,
+                    "name": "Archived",
+                    "status": "disabled",
+                },
+            ]
+
+        self.client.get_fbs_warehouses = warehouses
+
+        warehouse_id = await self.ozon._resolve_warehouse()
+
+        self.assertIsNone(warehouse_id)
+        self.assertIsNone(self.ozon.warehouse_id)
+
     async def test_initialize_saves_catalog_stocks_and_notifies_once(self):
         await self.ozon.initialize()
 
