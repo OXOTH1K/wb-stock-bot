@@ -194,9 +194,54 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
             x for x in self.db.list_order_state()
             if x["order_id"] == 501
         )
-        self.assertEqual(row["supplier_status"], "confirm")
+        self.assertEqual(row["supplier_status"], "new")
+        self.assertEqual(row["wb_status"], "waiting")
         self.assertEqual(row["status"], "assigned")
         self.assertEqual(row["supply_id"], "WB-GI-42")
+        self.assertEqual(tg.broadcasts, [])
+
+    async def test_refused_order_inside_supply_is_hidden_from_active_crm(self):
+        supply = {
+            "id": "WB-GI-279063317",
+            "name": "Старая поставка",
+            "done": False,
+            "cargoType": 1,
+            "crossBorderType": 0,
+            "orderIds": [5784564688],
+        }
+        row = self.row(order_id=5784564688)
+        monitor, _, tg = self.monitor(
+            [row],
+            [supply],
+            {5784564688: ("complete", "canceled_by_client")},
+        )
+        monitor._remember(monitor._parse_order(row))
+        monitor._set_state(5784564688, "assigned", "WB-GI-279063317")
+
+        await monitor.refresh()
+
+        self.assertNotIn(5784564688, monitor.current_new_orders)
+        self.assertNotIn(5784564688, monitor.current_supply_orders)
+        state = next(
+            x for x in self.db.list_order_state()
+            if x["order_id"] == 5784564688
+        )
+        self.assertEqual(state["supplier_status"], "complete")
+        self.assertEqual(state["wb_status"], "canceled_by_client")
+        self.assertEqual(tg.broadcasts, [])
+
+    async def test_early_client_decline_is_not_ready_for_assembly(self):
+        row = self.row(order_id=5806154851)
+        monitor, _, tg = self.monitor(
+            [row],
+            [],
+            {5806154851: ("new", "declined_by_client")},
+        )
+
+        await monitor.refresh()
+
+        self.assertNotIn(5806154851, monitor.current_new_orders)
+        self.assertNotIn(5806154851, monitor.current_supply_orders)
         self.assertEqual(tg.broadcasts, [])
 
     async def test_orders_new_row_does_not_override_confirm_status(self):
