@@ -1244,29 +1244,63 @@ class StockMonitorService:
                 continue
 
             if fbs_qty == 0 and wb_qty == 0:
-                saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
+                sku = product.vendor_code or f"WB-{nm_id}"
+                shared_suppressed = (
+                    self.shared_inventory is not None
+                    and self.db.get_channel_suppression_reason(
+                        "wb", sku
+                    ) == "marketplace_stock"
+                )
+                local_qty = (
+                    self.shared_inventory.local_quantity(sku)
+                    if self.shared_inventory is not None
+                    else 0
+                )
+                if shared_suppressed and local_qty <= 0:
+                    self.db.clear_channel_suppressed("wb", sku)
+                    self.db.clear_saved_product_fbs("wb_auto", nm_id)
+                    continue
+
+                saved = self.db.get_saved_product_fbs(
+                    "wb_auto", nm_id
+                )
                 saved_total = sum(saved.values())
-                action = "fbsrestore" if saved_total > 0 else "fbsadd"
+                restore_qty = (
+                    local_qty
+                    if shared_suppressed
+                    else saved_total
+                )
+                action = (
+                    "fbsrestore"
+                    if restore_qty > 0
+                    else "fbsadd"
+                )
                 if self.db.stock_decision_matches(
                     nm_id, action, fbs_qty, wb_qty, "skip"
                 ):
                     continue
                 actionable += 1
-                if saved_total > 0:
+                if restore_qty > 0:
                     text = (
-                        "🔎 /status: товар закончился на WB и FBS\n"
+                        "🔎 /status: товар закончился на складе WB\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        "FBS: 0 шт. | WB: 0 шт.\n\n"
-                        f"Сохранённый FBS-остаток: {saved_total} шт.\n"
-                        "Вернуть его на FBS?"
+                        "WB FBS: 0 шт. | склад WB: 0 шт.\n\n"
+                        + (
+                            f"Актуальный основной склад: {restore_qty} шт.\n"
+                            if shared_suppressed
+                            else f"Сохранённый FBS-остаток: {restore_qty} шт.\n"
+                        )
+                        + "Вернуть остаток на WB FBS?"
                     )
-                    keyboard = self._saved_restore_keyboard(nm_id, saved_total)
+                    keyboard = self._saved_restore_keyboard(
+                        nm_id, restore_qty
+                    )
                 else:
                     text = (
                         "🔎 /status: товар закончился везде\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        "FBS: 0 шт. | WB: 0 шт.\n\n"
-                        "Добавить остаток на FBS?"
+                        "Основной склад: 0 шт. | WB: 0 шт.\n\n"
+                        "Добавить остаток на основной склад?"
                     )
                     keyboard = self._depletion_action_keyboard(nm_id)
                 await self.tg.send_message(
