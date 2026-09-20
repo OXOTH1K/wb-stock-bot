@@ -25,6 +25,7 @@ class FakeService:
 class FakeOrders:
     def __init__(self):
         self.current_new_orders = {}
+        self.current_supply_orders = {}
 
 
 class CRMTests(unittest.IsolatedAsyncioTestCase):
@@ -124,6 +125,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         )
         self.db.conn.commit()
         self.db.set_order_runtime_status(501, "confirm", "waiting")
+        self.orders.current_supply_orders = {501: "WB-GI-1"}
 
         response = await self.client.get("/api/orders/wb")
         data = await response.json()
@@ -169,6 +171,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.db.set_order_runtime_status(601, "confirm", "waiting")
         self.db.set_order_runtime_status(602, "complete", "waiting")
         self.db.set_order_runtime_status(603, "cancel", "canceled")
+        self.orders.current_supply_orders = {601: "WB-GI-1"}
 
         response = await self.client.get("/api/orders/wb")
         data = await response.json()
@@ -176,6 +179,36 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ids, {601})
         self.assertEqual(data["items"][0]["supplier_status"], "confirm")
+
+    async def test_wb_membership_overrides_notified_and_stale_new_status(self):
+        self.db.conn.execute(
+            """
+            INSERT INTO order_state(
+                order_id, article, nm_id, status, supply_id,
+                first_seen_at, updated_at
+            )
+            VALUES (5805907258, 'keycap-double-yellow-heart', 100,
+                    'notified', NULL,
+                    '2026-09-18T14:38:04+00:00',
+                    '2026-09-18T14:38:04+00:00')
+            """
+        )
+        self.db.conn.commit()
+        self.db.set_order_runtime_status(5805907258, "new", "waiting")
+        self.orders.current_supply_orders = {
+            5805907258: "WB-GI-REAL"
+        }
+
+        response = await self.client.get("/api/orders/wb")
+        data = await response.json()
+
+        self.assertEqual(len(data["items"]), 1)
+        row = data["items"][0]
+        self.assertEqual(row["order_id"], 5805907258)
+        self.assertFalse(row["is_new"])
+        self.assertEqual(row["supplier_status"], "confirm")
+        self.assertEqual(row["status"], "assigned")
+        self.assertEqual(row["supply_id"], "WB-GI-REAL")
 
     async def test_ozon_orders_are_placeholder(self):
         response = await self.client.get("/api/orders/ozon")
