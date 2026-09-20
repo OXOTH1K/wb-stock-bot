@@ -288,18 +288,27 @@ class OrderMonitor:
 
         supplies: list[FBSSupply] = []
         memberships: dict[int, str] = {}
+        membership_ok = False
         try:
             supplies = await self._supplies()
             memberships = await self._supply_memberships(supplies)
+            membership_ok = True
         except Exception:
             log.exception("Could not refresh active supply membership")
             # Do not erase the last known active membership on a transient API error.
             memberships = dict(self.current_supply_orders)
 
-        self.current_supply_orders = memberships
+        try:
+            details = await self._sync_crm_order_statuses(orders)
+        except Exception:
+            log.exception("Could not refresh CRM order statuses")
+            details = {}
 
+        # A real active-supply membership is the strongest signal that an order
+        # is already being assembled, even if /orders/new or /orders/status lags.
+        # If membership refresh fails, keep the previous membership map instead.
         current_by_id = {order.id: order for order in orders}
-        for order_id, supply_id in memberships.items():
+        for order_id, supply_id in list(memberships.items()):
             state = self._state(order_id)
             order = current_by_id.get(order_id)
             if state is None and order is not None:
@@ -309,11 +318,31 @@ class OrderMonitor:
                 self._set_state(order_id, "assigned", supply_id)
             self.db.set_order_runtime_status(order_id, "confirm", "waiting")
 
-        ready = [
-            order
-            for order in orders
-            if order.id not in memberships
-        ]
+        # Status=confirm is also a valid fallback when the supply-membership call
+        # is incomplete. Reuse the locally known supply_id when available.
+        for order_id, (supplier_status, _) in details.items():
+            if supplier_status != "confirm" or order_id in memberships:
+                continue
+            state = self._state(order_id)
+            if state is not None and state[1]:
+                memberships[order_id] = state[1]
+
+        self.current_supply_orders = memberships
+
+        ready: list[FBSOrder] = []
+        for order in orders:
+            if order.id in memberships:
+                continue
+            supplier_status = details.get(order.id, ("new", ""))[0]
+            if supplier_status == "confirm":
+                state = self._state(order.id)
+                if state is not None and state[1]:
+                    self.current_supply_orders[order.id] = state[1]
+                continue
+            if supplier_status and supplier_status != "new":
+                continue
+            ready.append(order)
+
         self.current_new_orders = {order.id: order for order in ready}
         for order in ready:
             self.db.set_order_runtime_status(order.id, "new", "waiting")
@@ -333,12 +362,11 @@ class OrderMonitor:
                 )
                 self._remember(order)
 
-        # Statuses remain useful for history/recovery, but they no longer decide
-        # whether an order is "ready" vs "assembling" in CRM.
-        try:
-            await self._sync_crm_order_statuses(orders)
-        except Exception:
-            log.exception("Could not refresh CRM order statuses")
+        if membership_ok:
+            # Orders that were previously "assigned" but are no longer present in
+            # any active supply are intentionally not kept in current_supply_orders.
+            # CRM will therefore hide them unless they reappear as real new orders.
+            pass
 
     async def audit_pending(self, chat_id: int) -> int:
         """Show currently ready-to-assemble orders that still need a decision."""
