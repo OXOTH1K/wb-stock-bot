@@ -177,12 +177,16 @@ class OrderMonitor:
         return {order_id: status[0] for order_id, status in details.items()}
 
     async def _sync_crm_order_statuses(
-        self, orders: list[FBSOrder]
+        self,
+        orders: list[FBSOrder],
+        extra_order_ids: set[int] | None = None,
     ) -> dict[int, tuple[str, str]]:
         current_ids = {order.id for order in orders}
         rows = self.db.list_order_state(limit=1000)
 
         candidates: set[int] = set(current_ids)
+        if extra_order_ids:
+            candidates.update(int(order_id) for order_id in extra_order_ids)
         for row in rows:
             order_id = int(row["order_id"])
             supplier_status = row.get("supplier_status")
@@ -299,16 +303,28 @@ class OrderMonitor:
             memberships = dict(self.current_supply_orders)
 
         try:
-            details = await self._sync_crm_order_statuses(orders)
+            details = await self._sync_crm_order_statuses(
+                orders, set(memberships)
+            )
         except Exception:
             log.exception("Could not refresh CRM order statuses")
             details = {}
 
-        # A real active-supply membership is the strongest signal that an order
-        # is already being assembled, even if /orders/new or /orders/status lags.
-        # If membership refresh fails, keep the previous membership map instead.
+        # CRM shows only work that still belongs to our assembly stage.
+        # wbStatus=waiting is the only WB-side state we keep. Refused, sold,
+        # ready-for-pickup, sorted, defect and other downstream states are hidden
+        # even if WB still returns the order inside a supply.
         current_by_id = {order.id: order for order in orders}
-        for order_id, supply_id in list(memberships.items()):
+        active_memberships: dict[int, str] = {}
+        for order_id, supply_id in memberships.items():
+            status = details.get(order_id)
+            if status is not None:
+                supplier_status, wb_status = status
+                if wb_status != "waiting":
+                    continue
+                if supplier_status not in {"new", "confirm"}:
+                    continue
+
             state = self._state(order_id)
             order = current_by_id.get(order_id)
             if state is None and order is not None:
@@ -316,32 +332,36 @@ class OrderMonitor:
                 state = self._state(order_id)
             if state is not None:
                 self._set_state(order_id, "assigned", supply_id)
-            self.db.set_order_runtime_status(order_id, "confirm", "waiting")
+            active_memberships[order_id] = supply_id
 
-        # Status=confirm is also a valid fallback when the supply-membership call
-        # is incomplete. Reuse the locally known supply_id when available.
-        for order_id, (supplier_status, _) in details.items():
-            if supplier_status != "confirm" or order_id in memberships:
+        # Status=confirm is a fallback if WB temporarily omits an order from the
+        # supply membership response. It is accepted only while wbStatus=waiting.
+        for order_id, (supplier_status, wb_status) in details.items():
+            if (
+                supplier_status != "confirm"
+                or wb_status != "waiting"
+                or order_id in active_memberships
+            ):
                 continue
             state = self._state(order_id)
             if state is not None and state[1]:
-                memberships[order_id] = state[1]
+                active_memberships[order_id] = state[1]
 
-        self.current_supply_orders = memberships
+        self.current_supply_orders = active_memberships
 
         ready: list[FBSOrder] = []
         for order in orders:
-            if order.id in memberships:
+            if order.id in active_memberships:
                 continue
-            supplier_status = details.get(order.id, ("new", ""))[0]
-            if supplier_status == "confirm":
-                state = self._state(order.id)
-                if state is not None and state[1]:
-                    self.current_supply_orders[order.id] = state[1]
+            status = details.get(order.id)
+            if status is None:
+                # On a temporary status API failure keep the /orders/new item
+                # actionable rather than silently dropping it.
+                ready.append(order)
                 continue
-            if supplier_status and supplier_status != "new":
-                continue
-            ready.append(order)
+            supplier_status, wb_status = status
+            if supplier_status == "new" and wb_status == "waiting":
+                ready.append(order)
 
         self.current_new_orders = {order.id: order for order in ready}
         for order in ready:
