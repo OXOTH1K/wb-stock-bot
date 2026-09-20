@@ -324,6 +324,8 @@ class OzonIntegration:
             pending.append(posting)
 
         for posting in pending:
+            if self._state(posting.posting_number) is None:
+                await self._apply_sale(posting)
             await self.tg.send_message(
                 chat_id,
                 "🔎 /status: OZON-заказ требует решения\n\n"
