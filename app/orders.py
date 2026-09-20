@@ -175,36 +175,35 @@ class OrderMonitor:
         details = await self._order_status_details(order_ids)
         return {order_id: status[0] for order_id, status in details.items()}
 
-    async def _sync_crm_order_statuses(self, orders: list[FBSOrder]) -> None:
+    async def _sync_crm_order_statuses(
+        self, orders: list[FBSOrder]
+    ) -> dict[int, tuple[str, str]]:
         current_ids = {order.id for order in orders}
-        for order in orders:
-            self.db.set_order_runtime_status(order.id, "new", "waiting")
-
         rows = self.db.list_order_state(limit=1000)
-        candidates: list[int] = []
+
+        candidates: set[int] = set(current_ids)
         for row in rows:
             order_id = int(row["order_id"])
-            if order_id in current_ids:
-                continue
             supplier_status = row.get("supplier_status")
             local_status = str(row.get("status") or "")
             if supplier_status in {"new", "confirm"}:
-                candidates.append(order_id)
+                candidates.add(order_id)
             elif supplier_status is None and local_status in {
                 "notified",
                 "assigned",
                 "skipped",
             }:
-                candidates.append(order_id)
+                candidates.add(order_id)
 
         if not candidates:
-            return
+            return {}
 
-        details = await self._order_status_details(candidates)
+        details = await self._order_status_details(sorted(candidates))
         for order_id, (supplier_status, wb_status) in details.items():
             self.db.set_order_runtime_status(
                 order_id, supplier_status, wb_status
             )
+        return details
 
     async def _supplies(self) -> list[FBSSupply]:
         result: list[FBSSupply] = []
@@ -269,8 +268,22 @@ class OrderMonitor:
 
     async def refresh(self) -> None:
         orders = await self._new_orders()
-        self.current_new_orders = {order.id: order for order in orders}
-        unseen = [o for o in orders if self._state(o.id) is None]
+
+        try:
+            details = await self._sync_crm_order_statuses(orders)
+        except Exception:
+            log.exception("Could not refresh CRM order statuses")
+            details = {}
+
+        verified_new = [
+            order
+            for order in orders
+            if details.get(order.id, ("new", ""))[0] == "new"
+        ]
+        self.current_new_orders = {
+            order.id: order for order in verified_new
+        }
+        unseen = [o for o in verified_new if self._state(o.id) is None]
 
         if unseen:
             supplies = None
@@ -285,11 +298,6 @@ class OrderMonitor:
                     reply_markup=self._keyboard(order, supplies),
                 )
                 self._remember(order)
-
-        try:
-            await self._sync_crm_order_statuses(orders)
-        except Exception:
-            log.exception("Could not refresh CRM order statuses")
 
     async def audit_pending(self, chat_id: int) -> int:
         """Show currently-new orders that still need a decision in this chat."""
