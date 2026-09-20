@@ -114,6 +114,40 @@ class StateDB:
         )
         self.conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS channel_sync_state (
+                channel TEXT NOT NULL,
+                sku TEXT NOT NULL,
+                suppressed INTEGER NOT NULL DEFAULT 0,
+                reason TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (channel, sku)
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_order_event (
+                channel TEXT NOT NULL,
+                order_key TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (channel, order_key)
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stock_sync_pending (
+                channel TEXT NOT NULL,
+                sku TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (channel, sku)
+            )
+            """
+        )
+        self.conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS crm_order_meta (
                 order_id INTEGER PRIMARY KEY,
                 assembled INTEGER NOT NULL DEFAULT 0,
@@ -601,6 +635,203 @@ class StateDB:
             }
             for sku, title, external_id in rows
         }
+
+    def is_channel_suppressed(self, channel: str, sku: str) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT suppressed
+            FROM channel_sync_state
+            WHERE channel = ? AND sku = ?
+            """,
+            (str(channel), str(sku).strip()),
+        ).fetchone()
+        return bool(row and int(row[0]))
+
+    def set_channel_suppressed(
+        self,
+        channel: str,
+        sku: str,
+        suppressed: bool,
+        reason: str = "",
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO channel_sync_state(
+                    channel, sku, suppressed, reason, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(channel, sku) DO UPDATE SET
+                    suppressed = excluded.suppressed,
+                    reason = excluded.reason,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(channel),
+                    str(sku).strip(),
+                    1 if suppressed else 0,
+                    str(reason),
+                    now,
+                ),
+            )
+            if suppressed:
+                self.conn.execute(
+                    """
+                    DELETE FROM stock_sync_pending
+                    WHERE channel = ? AND sku = ?
+                    """,
+                    (str(channel), str(sku).strip()),
+                )
+
+    def apply_order_sale(
+        self,
+        channel: str,
+        order_key: str,
+        items: dict[str, int],
+    ) -> tuple[bool, dict[str, dict[str, int]]]:
+        """Deduct one marketplace order from local stock exactly once."""
+        clean_items = {
+            str(sku).strip(): max(0, int(quantity))
+            for sku, quantity in items.items()
+            if str(sku).strip() and int(quantity) > 0
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        changes: dict[str, dict[str, int]] = {}
+
+        with self.conn:
+            existing = self.conn.execute(
+                """
+                SELECT 1
+                FROM inventory_order_event
+                WHERE channel = ? AND order_key = ?
+                """,
+                (str(channel), str(order_key)),
+            ).fetchone()
+            if existing is not None:
+                return False, {}
+
+            self.conn.execute(
+                """
+                INSERT INTO inventory_order_event(
+                    channel, order_key, created_at
+                )
+                VALUES (?, ?, ?)
+                """,
+                (str(channel), str(order_key), now),
+            )
+
+            for sku, requested in clean_items.items():
+                row = self.conn.execute(
+                    """
+                    SELECT quantity
+                    FROM local_inventory
+                    WHERE sku = ?
+                    """,
+                    (sku,),
+                ).fetchone()
+                before = int(row[0]) if row is not None else 0
+                after = max(0, before - requested)
+                shortage = max(0, requested - before)
+
+                self.conn.execute(
+                    """
+                    INSERT INTO local_inventory(
+                        sku, quantity, updated_at
+                    )
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(sku) DO UPDATE SET
+                        quantity = excluded.quantity,
+                        updated_at = excluded.updated_at
+                    """,
+                    (sku, after, now),
+                )
+                if after != before:
+                    self.conn.execute(
+                        """
+                        INSERT INTO inventory_movement(
+                            sku, delta, before_qty, after_qty,
+                            reason, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            sku,
+                            after - before,
+                            before,
+                            after,
+                            f"order:{channel}:{order_key}",
+                            now,
+                        ),
+                    )
+                changes[sku] = {
+                    "before": before,
+                    "after": after,
+                    "requested": requested,
+                    "shortage": shortage,
+                }
+
+        return True, changes
+
+    def queue_stock_sync(
+        self,
+        channel: str,
+        sku: str,
+        quantity: int,
+        reason: str,
+    ) -> None:
+        quantity = max(0, int(quantity))
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO stock_sync_pending(
+                    channel, sku, quantity, reason, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(channel, sku) DO UPDATE SET
+                    quantity = excluded.quantity,
+                    reason = excluded.reason,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(channel),
+                    str(sku).strip(),
+                    quantity,
+                    str(reason),
+                    now,
+                ),
+            )
+
+    def list_stock_sync_pending(self) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT channel, sku, quantity, reason
+            FROM stock_sync_pending
+            ORDER BY updated_at, channel, sku
+            """
+        ).fetchall()
+        return [
+            {
+                "channel": str(channel),
+                "sku": str(sku),
+                "quantity": int(quantity),
+                "reason": str(reason),
+            }
+            for channel, sku, quantity, reason in rows
+        ]
+
+    def delete_stock_sync_pending(
+        self, channel: str, sku: str
+    ) -> None:
+        with self.conn:
+            self.conn.execute(
+                """
+                DELETE FROM stock_sync_pending
+                WHERE channel = ? AND sku = ?
+                """,
+                (str(channel), str(sku).strip()),
+            )
 
     def set_order_runtime_status(
         self, order_id: int, supplier_status: str, wb_status: str = ""
