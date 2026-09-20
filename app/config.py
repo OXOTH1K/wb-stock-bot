@@ -25,6 +25,10 @@ class Settings:
     crm_user: str
     crm_password: str
     crm_allowed_networks: tuple[str, ...]
+    ozon_client_id: str
+    ozon_api_key: str
+    ozon_order_check_interval: int
+    ozon_stock_check_interval: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -44,6 +48,13 @@ class Settings:
                 item = item.strip()
                 if item:
                     chat_ids.add(int(item))
+
+        ozon_client_id = os.getenv("OZON_CLIENT_ID", "").strip()
+        ozon_api_key = os.getenv("OZON_API_KEY", "").strip()
+        if bool(ozon_client_id) != bool(ozon_api_key):
+            raise RuntimeError(
+                "OZON_CLIENT_ID and OZON_API_KEY must be set together"
+            )
 
         crm_enabled = os.getenv("CRM_ENABLED", "1").strip().lower() not in {
             "0", "false", "no", "off"
@@ -87,4 +98,18 @@ class Settings:
             crm_user=crm_user,
             crm_password=crm_password,
             crm_allowed_networks=crm_allowed_networks,
+            ozon_client_id=ozon_client_id,
+            ozon_api_key=ozon_api_key,
+            ozon_order_check_interval=int(
+                os.getenv(
+                    "OZON_ORDER_CHECK_INTERVAL",
+                    os.getenv("ORDER_CHECK_INTERVAL", "30"),
+                )
+            ),
+            ozon_stock_check_interval=int(
+                os.getenv(
+                    "OZON_STOCK_CHECK_INTERVAL",
+                    os.getenv("FBS_CHECK_INTERVAL", "300"),
+                )
+            ),
         )
