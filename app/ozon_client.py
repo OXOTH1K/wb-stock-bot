@@ -303,7 +303,7 @@ class OzonClient:
                     "to": to.isoformat().replace("+00:00", "Z"),
                     "status": ["awaiting_packaging"],
                 },
-                "limit": 1000,
+                "limit": 100,
                 "cursor": cursor,
                 "with": {
                     "analytics_data": False,
