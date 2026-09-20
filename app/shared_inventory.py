@@ -409,6 +409,13 @@ class SharedInventoryService:
             )
             marked.append(sku)
 
+        current = self.db.get_channel_stock(
+            "ozon_fbs", tuple(catalog)
+        )
+        before_total = sum(
+            int(current.get(sku, 0))
+            for sku in catalog
+        )
         quantities = {sku: 0 for sku in catalog}
         try:
             await self.ozon.set_fbs_stocks(quantities)
@@ -421,12 +428,7 @@ class SharedInventoryService:
                         "ozon", sku
                     )
             raise
-        return len(quantities), sum(
-            int(value)
-            for value in self.db.get_channel_stock(
-                "ozon_fbs", tuple(catalog)
-            ).values()
-        )
+        return len(quantities), before_total
 
     async def restore_ozon_mass(self) -> tuple[int, int]:
         if self.ozon is None:
