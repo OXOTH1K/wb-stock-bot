@@ -724,6 +724,41 @@ class StateDB:
                 (str(channel), str(sku).strip()),
             )
 
+    def get_channel_suppression_reason(
+        self, channel: str, sku: str
+    ) -> str | None:
+        row = self.conn.execute(
+            """
+            SELECT reason
+            FROM channel_suppression
+            WHERE channel = ? AND sku = ?
+            """,
+            (str(channel), str(sku).strip()),
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    def clear_channel_suppressions_by_reason(
+        self, channel: str, reason: str
+    ) -> list[str]:
+        rows = self.conn.execute(
+            """
+            SELECT sku
+            FROM channel_suppression
+            WHERE channel = ? AND reason = ?
+            """,
+            (str(channel), str(reason)),
+        ).fetchall()
+        skus = [str(row[0]) for row in rows]
+        with self.conn:
+            self.conn.execute(
+                """
+                DELETE FROM channel_suppression
+                WHERE channel = ? AND reason = ?
+                """,
+                (str(channel), str(reason)),
+            )
+        return skus
+
     def is_channel_suppressed(self, channel: str, sku: str) -> bool:
         row = self.conn.execute(
             """
