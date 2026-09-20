@@ -583,6 +583,7 @@ class OrderMonitor:
                         return True
                     await self._add_order(supply.id, order.id)
                     self.current_new_orders.pop(order.id, None)
+                    self.current_supply_orders[order.id] = supply.id
                     self.db.set_order_runtime_status(order.id, "confirm", "waiting")
                     self._set_state(order.id, "assigned", supply.id)
                     await self._finish(chat_id, message_id, original, f"✅ Заказ добавлен в поставку {supply.name} ({supply.id}).")
@@ -601,6 +602,7 @@ class OrderMonitor:
                             log.exception("Could not remove empty supply %s", supply_id)
                         raise
                     self.current_new_orders.pop(order.id, None)
+                    self.current_supply_orders[order.id] = supply_id
                     self.db.set_order_runtime_status(order.id, "confirm", "waiting")
                     self._set_state(order.id, "assigned", supply_id)
                     try:
