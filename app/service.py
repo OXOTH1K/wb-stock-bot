@@ -110,7 +110,9 @@ class StockMonitorService:
                 f"Товаров: {len(self.products)}\n"
                 f"С нулём на FBS: {zeros_fbs}\n"
                 f"С нулём на складах WB: {wb_zero_text}\n\n"
-                "Команды: /stocks, /zero, /status, /fbs_zero_all, /fbs_restore"
+                "Команды: /stocks_wb, /stocks_ozon, /zero, /status, "
+                "/fbs_zero_all, /fbs_restore, /ozon_fbs_zero_all, "
+                "/ozon_fbs_restore"
                 f"{wb_startup_note}"
             ),
         )
@@ -406,12 +408,16 @@ class StockMonitorService:
                 (
                     f"Ваш Telegram chat_id: {chat_id}\n\n"
                     "После добавления этого ID в TELEGRAM_CHAT_IDS доступны команды:\n"
-                    "/stocks — актуальные остатки\n"
-                    "/stocks 2 — открыть конкретную страницу\n"
+                    "/stocks_wb — остатки WB FBS + склады WB\n"
+                    "/stocks_wb 2 — открыть страницу WB\n"
+                    "/stocks_ozon — остатки OZON FBS + FBO\n"
+                    "/stocks_ozon 2 — открыть страницу OZON\n"
                     "/stock <артикул продавца> — найти товар\n"
                     "/zero — товары с нулевым остатком\n"
                     "/fbs_zero_all — сохранить и обнулить весь FBS\n"
-                    "/fbs_restore — вернуть последний массовый снимок FBS\n"
+                    "/fbs_restore — восстановить WB FBS\n"
+                    "/ozon_fbs_zero_all — обнулить весь OZON FBS\n"
+                    "/ozon_fbs_restore — восстановить OZON FBS из локального склада\n"
                     "/status — состояние сервиса"
                 ),
             )
@@ -428,17 +434,31 @@ class StockMonitorService:
             return
 
         try:
-            if command == "/stocks":
+            if command == "/stocks_wb":
                 page = 1
                 if args:
                     try:
                         page = max(1, int(args[0]))
                     except ValueError:
-                        await self.tg.send_message(chat_id, "Формат: /stocks или /stocks 2")
+                        await self.tg.send_message(
+                            chat_id,
+                            "Формат: /stocks_wb или /stocks_wb 2",
+                        )
                         return
-                await self.tg.send_message(chat_id, "Обновляю остатки…")
+                await self.tg.send_message(
+                    chat_id, "Обновляю остатки WB…"
+                )
                 await self.refresh_for_command()
                 await self._send_stocks_page(chat_id, page)
+            elif command == "/stocks":
+                await self.tg.send_message(
+                    chat_id,
+                    (
+                        "Остатки разделены по площадкам:\n"
+                        "/stocks_wb — WB FBS + склады WB\n"
+                        "/stocks_ozon — OZON FBS + FBO"
+                    ),
+                )
             elif command == "/zero":
                 await self.tg.send_message(chat_id, "Обновляю остатки…")
                 await self.refresh_for_command()
@@ -487,8 +507,11 @@ class StockMonitorService:
                 await self.tg.send_message(
                     chat_id,
                     (
-                        "Команды: /stocks, /stock <артикул продавца>, /zero, "
-                        "/fbs_zero_all, /fbs_restore, /status, /id"
+                        "Команды: /stocks_wb, /stocks_ozon, "
+                        "/stock <артикул продавца>, /zero, "
+                        "/fbs_zero_all, /fbs_restore, "
+                        "/ozon_fbs_zero_all, /ozon_fbs_restore, "
+                        "/status, /id"
                     ),
                 )
         except Exception as exc:
@@ -533,7 +556,7 @@ class StockMonitorService:
 
         escaped_table = escape("\n".join(table))
         return (
-            f"📦 <b>Остатки</b> — {page}/{pages} · товаров: {total}\n\n"
+            f"🟣 <b>Остатки WB</b> — {page}/{pages} · товаров: {total}\n\n"
             f"<pre>{escaped_table}</pre>\n"
             "<i>WB — суммарный остаток на складах Wildberries.</i>"
         )
@@ -542,10 +565,10 @@ class StockMonitorService:
         _, page, pages, _ = self._stock_page_meta(page)
         buttons = []
         if page > 1:
-            buttons.append({"text": "◀️", "callback_data": f"stocks:{page - 1}"})
-        buttons.append({"text": f"{page}/{pages}", "callback_data": "stocks:noop"})
+            buttons.append({"text": "◀️", "callback_data": f"stockswb:{page - 1}"})
+        buttons.append({"text": f"{page}/{pages}", "callback_data": "stockswb:noop"})
         if page < pages:
-            buttons.append({"text": "▶️", "callback_data": f"stocks:{page + 1}"})
+            buttons.append({"text": "▶️", "callback_data": f"stockswb:{page + 1}"})
         return {"inline_keyboard": [buttons]}
 
     async def _send_stocks_page(self, chat_id: int, page: int) -> None:
@@ -1023,7 +1046,11 @@ class StockMonitorService:
     ) -> None:
         if chat_id not in self.settings.telegram_chat_ids:
             return
-        if data in {"stocks:noop", "action:noop"}:
+        if data in {
+            "stocks:noop",
+            "stockswb:noop",
+            "action:noop",
+        }:
             return
 
         if data.startswith("fbsallzero:"):
@@ -1052,7 +1079,7 @@ class StockMonitorService:
                 await self.tg.send_message(chat_id, f"⚠️ Не удалось восстановить FBS: {exc}")
             return
 
-        if data.startswith("stocks:"):
+        if data.startswith("stockswb:") or data.startswith("stocks:"):
             try:
                 page = int(data.split(":", 1)[1])
             except (TypeError, ValueError):
