@@ -6,12 +6,16 @@ import math
 from html import escape
 import time
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from .config import Settings
 from .db import StateDB
 from .models import Product, ProductSize, SellerWarehouse, aggregate_by_nm, build_products
 from .telegram import TelegramBot
 from .wb_client import WildberriesClient
+
+if TYPE_CHECKING:
+    from .shared_inventory import SharedInventoryService
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +50,12 @@ class StockMonitorService:
         self._error_notified_at: dict[str, float] = {}
         self._fbs_loaded = False
         self._wb_loaded = False
+        self.shared_inventory: SharedInventoryService | None = None
+
+    def set_shared_inventory(
+        self, inventory: "SharedInventoryService"
+    ) -> None:
+        self.shared_inventory = inventory
 
     async def initialize(self) -> None:
         self.warehouse = await self.wb.get_single_seller_warehouse()
