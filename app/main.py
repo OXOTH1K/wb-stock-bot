@@ -35,7 +35,7 @@ async def amain() -> None:
             orders = OrderMonitor(settings, wb, tg, db, service.warehouse.id)
             await orders.poll_once(service.reconcile_after_gap)
 
-            crm = CRMServer(settings, service, orders, db)
+            crm = CRMServer(settings, service, db)
             await crm.start()
 
             async def message_handler(chat_id: int, text: str) -> None:
