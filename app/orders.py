@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from .config import Settings
 from .db import StateDB
+from .inventory_sync import SharedStockSync
 from .telegram import TelegramBot
 from .wb_client import WildberriesClient
 
@@ -40,12 +41,21 @@ RecoveryHandler = Callable[[datetime, datetime], Awaitable[None]]
 
 
 class OrderMonitor:
-    def __init__(self, settings: Settings, wb: WildberriesClient, tg: TelegramBot, db: StateDB, warehouse_id: int):
+    def __init__(
+        self,
+        settings: Settings,
+        wb: WildberriesClient,
+        tg: TelegramBot,
+        db: StateDB,
+        warehouse_id: int,
+        stock_sync: SharedStockSync | None = None,
+    ):
         self.settings = settings
         self.wb = wb
         self.tg = tg
         self.db = db
         self.warehouse_id = int(warehouse_id)
+        self.stock_sync = stock_sync
         self._lock = asyncio.Lock()
         self.current_new_orders: dict[int, FBSOrder] = {}
         self.current_supply_orders: dict[int, str] = {}
@@ -277,7 +287,7 @@ class OrderMonitor:
         return {"inline_keyboard": rows}
 
     def _text(self, order: FBSOrder, supplies: list[FBSSupply] | None) -> str:
-        lines = ["🛒 Новый FBS-заказ", f"Артикул: {order.article or '—'}", f"Заказ: {order.id}"]
+        lines = ["🟣 WB · Новый FBS-заказ", f"Артикул: {order.article or '—'}", f"Заказ: {order.id}"]
         if order.offices:
             lines.append(f"Направление WB: {', '.join(order.offices)}")
         if supplies is None:
@@ -328,6 +338,14 @@ class OrderMonitor:
             state = self._state(order_id)
             order = current_by_id.get(order_id)
             if state is None and order is not None:
+                if self.stock_sync is not None:
+                    sku = self.stock_sync.resolve_wb_sku(
+                        order.article, order.nm_id
+                    )
+                    if sku:
+                        await self.stock_sync.apply_order(
+                            "wb", str(order.id), {sku: 1}
+                        )
                 self._remember(order)
                 state = self._state(order_id)
             if state is not None:
@@ -375,6 +393,14 @@ class OrderMonitor:
                 except Exception:
                     log.exception("Could not load supplies")
             for order in sorted(unseen, key=lambda o: (o.created_at, o.id)):
+                if self.stock_sync is not None:
+                    sku = self.stock_sync.resolve_wb_sku(
+                        order.article, order.nm_id
+                    )
+                    if sku:
+                        await self.stock_sync.apply_order(
+                            "wb", str(order.id), {sku: 1}
+                        )
                 await self.tg.broadcast(
                     self.settings.telegram_chat_ids,
                     self._text(order, supplies),
@@ -439,6 +465,14 @@ class OrderMonitor:
 
         recovered_new = 0
         for order in sorted(new_orders, key=lambda o: (o.created_at, o.id)):
+            if self.stock_sync is not None:
+                sku = self.stock_sync.resolve_wb_sku(
+                    order.article, order.nm_id
+                )
+                if sku:
+                    await self.stock_sync.apply_order(
+                        "wb", str(order.id), {sku: 1}
+                    )
             await self.tg.broadcast(
                 self.settings.telegram_chat_ids,
                 "🧭 Заказ найден при сверке после восстановления связи\n\n"
