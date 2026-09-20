@@ -5,6 +5,7 @@ import logging
 import signal
 
 from .config import Settings
+from .crm import CRMServer
 from .db import StateDB
 from .orders import OrderMonitor
 from .service import StockMonitorService
@@ -33,6 +34,9 @@ async def amain() -> None:
 
             orders = OrderMonitor(settings, wb, tg, db, service.warehouse.id)
             await orders.poll_once(service.reconcile_after_gap)
+
+            crm = CRMServer(settings, service, orders, db)
+            await crm.start()
 
             async def message_handler(chat_id: int, text: str) -> None:
                 command = (text.split(maxsplit=1)[0] if text.strip() else "").split("@", 1)[0].lower()
@@ -84,10 +88,13 @@ async def amain() -> None:
                 except NotImplementedError:
                     pass
 
-            await stop_event.wait()
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await stop_event.wait()
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await crm.stop()
     finally:
         db.close()
 
