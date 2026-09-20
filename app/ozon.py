@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone
+from html import escape
 from typing import TYPE_CHECKING
 
 from .config import Settings
@@ -42,6 +44,19 @@ class OzonIntegration:
                 status TEXT NOT NULL,
                 first_seen_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.db.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ozon_stock_decision (
+                sku TEXT NOT NULL,
+                action TEXT NOT NULL,
+                fbs_qty INTEGER NOT NULL,
+                fbo_qty INTEGER NOT NULL,
+                decision TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (sku, action)
             )
             """
         )
@@ -87,6 +102,68 @@ class OzonIntegration:
                 (str(posting_number), now, now),
             )
         return cur.rowcount == 1
+
+    def _save_stock_decision(
+        self,
+        sku: str,
+        action: str,
+        fbs_qty: int,
+        fbo_qty: int,
+        decision: str,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.db.conn:
+            self.db.conn.execute(
+                """
+                INSERT INTO ozon_stock_decision(
+                    sku, action, fbs_qty, fbo_qty, decision, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(sku, action) DO UPDATE SET
+                    fbs_qty = excluded.fbs_qty,
+                    fbo_qty = excluded.fbo_qty,
+                    decision = excluded.decision,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(sku),
+                    str(action),
+                    int(fbs_qty),
+                    int(fbo_qty),
+                    str(decision),
+                    now,
+                ),
+            )
+
+    def _stock_decision_matches(
+        self,
+        sku: str,
+        action: str,
+        fbs_qty: int,
+        fbo_qty: int,
+        decision: str = "skip",
+    ) -> bool:
+        row = self.db.conn.execute(
+            """
+            SELECT fbs_qty, fbo_qty, decision
+            FROM ozon_stock_decision
+            WHERE sku = ? AND action = ?
+            """,
+            (str(sku), str(action)),
+        ).fetchone()
+        return bool(
+            row is not None
+            and int(row[0]) == int(fbs_qty)
+            and int(row[1]) == int(fbo_qty)
+            and str(row[2]) == str(decision)
+        )
+
+    def _clear_stock_decisions(self, sku: str) -> None:
+        with self.db.conn:
+            self.db.conn.execute(
+                "DELETE FROM ozon_stock_decision WHERE sku = ?",
+                (str(sku),),
+            )
 
     def set_shared_inventory(
         self, inventory: "SharedInventoryService"
@@ -151,7 +228,15 @@ class OzonIntegration:
         await self.refresh_catalog_and_stocks()
         await self.refresh_orders()
 
-    async def set_fbs_stock(self, sku: str, quantity: int) -> None:
+    async def set_fbs_stocks(
+        self, quantities: dict[str, int]
+    ) -> None:
+        clean = {
+            str(sku): int(quantity)
+            for sku, quantity in quantities.items()
+        }
+        if not clean:
+            return
         warehouse_id = await self._resolve_warehouse()
         if warehouse_id is None:
             raise RuntimeError(
@@ -160,16 +245,28 @@ class OzonIntegration:
                 "active warehouse exists"
             )
         await self.client.set_fbs_stocks(
-            warehouse_id, {str(sku): int(quantity)}
+            warehouse_id, clean
         )
-        self.db.set_channel_stock(
-            "ozon_fbs", str(sku), int(quantity)
+        for sku, quantity in clean.items():
+            self.db.set_channel_stock(
+                "ozon_fbs", sku, quantity
+            )
+
+    async def set_fbs_stock(self, sku: str, quantity: int) -> None:
+        await self.set_fbs_stocks(
+            {str(sku): int(quantity)}
         )
 
-    async def refresh_catalog_and_stocks(self) -> None:
+    async def refresh_catalog_and_stocks(
+        self, notify: bool = True
+    ) -> None:
+        previous_catalog = self.db.get_channel_catalog("ozon")
+        previous_skus = tuple(previous_catalog)
+        previous_fbs = self.db.get_channel_stock(
+            "ozon_fbs", previous_skus
+        )
         previous_fbo = self.db.get_channel_stock(
-            "ozon_fbo",
-            tuple(self.db.get_channel_catalog("ozon")),
+            "ozon_fbo", previous_skus
         )
         catalog, breakdown = await asyncio.gather(
             self.client.get_catalog(),
@@ -194,9 +291,16 @@ class OzonIntegration:
         except Exception:
             log.exception("Could not resolve Ozon FBS warehouse")
 
-        if self.inventory is not None and previous_fbo:
+        if (
+            notify
+            and self.inventory is not None
+            and (previous_fbs or previous_fbo)
+        ):
             await self._notify_stock_transitions(
-                previous_fbo, fbo
+                previous_fbs,
+                previous_fbo,
+                fbs,
+                fbo,
             )
 
     def _sku_by_product_id(self, product_id: str) -> str | None:
@@ -241,72 +345,475 @@ class OzonIntegration:
             ]
         return {"inline_keyboard": [buttons]}
 
+    def _stock_snapshot(
+        self,
+    ) -> tuple[dict[str, dict], dict[str, int], dict[str, int]]:
+        catalog = self.db.get_channel_catalog("ozon")
+        skus = tuple(catalog)
+        return (
+            catalog,
+            self.db.get_channel_stock("ozon_fbs", skus),
+            self.db.get_channel_stock("ozon_fbo", skus),
+        )
+
+    def _stock_page_meta(
+        self, page: int
+    ) -> tuple[list[str], int, int, int]:
+        catalog, fbs, fbo = self._stock_snapshot()
+        rows = sorted(
+            catalog,
+            key=lambda sku: (
+                int(fbs.get(sku, 0)) + int(fbo.get(sku, 0)) > 0,
+                sku.lower(),
+            ),
+        )
+        page_size = max(
+            1, int(getattr(self.settings, "stocks_page_size", 20))
+        )
+        pages = max(1, math.ceil(len(rows) / page_size))
+        page = min(max(1, int(page)), pages)
+        selected = rows[
+            (page - 1) * page_size : page * page_size
+        ]
+        return selected, page, pages, len(rows)
+
+    def _format_stocks_page(self, page: int) -> str:
+        catalog, fbs, fbo = self._stock_snapshot()
+        selected, page, pages, total = self._stock_page_meta(page)
+        name_width = 32
+        table = [
+            f"   {'Артикул':<{name_width}} {'FBS':>4} {'FBO':>4}"
+        ]
+        for sku in selected:
+            fbs_qty = int(fbs.get(sku, 0))
+            fbo_qty = int(fbo.get(sku, 0))
+            if fbs_qty > 0 and fbo_qty > 0:
+                marker = "🟣"
+            elif fbs_qty > 0 or fbo_qty > 0:
+                marker = "🟢"
+            else:
+                marker = "🔴"
+            raw_name = sku or str(
+                catalog.get(sku, {}).get("title") or "без артикула"
+            )
+            if len(raw_name) > name_width:
+                raw_name = raw_name[: name_width - 1] + "…"
+            table.append(
+                f"{marker} {raw_name:<{name_width}} "
+                f"{fbs_qty:>4} {fbo_qty:>4}"
+            )
+        escaped_table = escape("\n".join(table))
+        return (
+            f"🟦 <b>Остатки OZON</b> — {page}/{pages} · "
+            f"товаров: {total}\n\n"
+            f"<pre>{escaped_table}</pre>\n"
+            "<i>FBO — остаток на складе OZON.</i>"
+        )
+
+    def _stocks_keyboard(self, page: int) -> dict:
+        _, page, pages, _ = self._stock_page_meta(page)
+        buttons = []
+        if page > 1:
+            buttons.append(
+                {
+                    "text": "◀️",
+                    "callback_data": f"ozstocks:{page - 1}",
+                }
+            )
+        buttons.append(
+            {
+                "text": f"{page}/{pages}",
+                "callback_data": "ozstocks:noop",
+            }
+        )
+        if page < pages:
+            buttons.append(
+                {
+                    "text": "▶️",
+                    "callback_data": f"ozstocks:{page + 1}",
+                }
+            )
+        return {"inline_keyboard": [buttons]}
+
+    async def _send_stocks_page(
+        self, chat_id: int, page: int
+    ) -> None:
+        _, page, _, _ = self._stock_page_meta(page)
+        await self.tg.send_message(
+            chat_id,
+            self._format_stocks_page(page),
+            parse_mode="HTML",
+            reply_markup=self._stocks_keyboard(page),
+        )
+
+    def _depletion_keyboard(
+        self, sku: str
+    ) -> dict | None:
+        row = self.db.get_channel_catalog("ozon").get(sku)
+        if row is None or not row.get("external_id"):
+            return None
+        product_id = str(row["external_id"])
+        return {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "1",
+                        "callback_data": f"ozstock:{product_id}:add1",
+                    },
+                    {
+                        "text": "5",
+                        "callback_data": f"ozstock:{product_id}:add5",
+                    },
+                    {
+                        "text": "Не добавлять",
+                        "callback_data": f"ozstock:{product_id}:skipadd",
+                    },
+                ]
+            ]
+        }
+
     async def _notify_stock_transitions(
         self,
+        previous_fbs: dict[str, int],
         previous_fbo: dict[str, int],
+        current_fbs: dict[str, int],
         current_fbo: dict[str, int],
     ) -> None:
         if self.inventory is None:
             return
-        fbs = self.db.get_channel_stock(
-            "ozon_fbs", tuple(current_fbo)
-        )
-        for sku, new_qty in current_fbo.items():
-            old_qty = previous_fbo.get(sku)
-            if old_qty is None:
+        for sku in sorted(set(current_fbs) | set(current_fbo)):
+            old_fbs = previous_fbs.get(sku)
+            old_fbo = previous_fbo.get(sku)
+            if old_fbs is None or old_fbo is None:
                 continue
+            new_fbs = int(current_fbs.get(sku, 0))
+            new_fbo = int(current_fbo.get(sku, 0))
+            if int(old_fbs) != new_fbs or int(old_fbo) != new_fbo:
+                self._clear_stock_decisions(sku)
+
             local = self.inventory.local_quantity(sku)
-            if old_qty == 0 and new_qty > 0:
-                if (
-                    local <= 0
-                    or int(fbs.get(sku, 0)) <= 0
-                    or self.inventory.is_suppressed("ozon", sku)
+            reason = self.db.get_channel_suppression_reason(
+                "ozon", sku
+            )
+
+            if (
+                int(old_fbo) == 0
+                and new_fbo > 0
+                and new_fbs > 0
+                and local > 0
+                and reason is None
+            ):
+                keyboard = self._stock_keyboard(sku, "zero")
+                if keyboard is not None:
+                    await self.tg.broadcast(
+                        self.settings.telegram_chat_ids,
+                        (
+                            "🟦 Товар появился на складе OZON\n"
+                            f"Артикул продавца: {sku}\n"
+                            f"Основной склад: {local} шт.\n"
+                            f"OZON FBS: {new_fbs} шт.\n"
+                            f"OZON FBO: было 0 шт. → стало {new_fbo} шт.\n\n"
+                            "Обнулить только OZON FBS? "
+                            "WB FBS останется равным основному складу."
+                        ),
+                        reply_markup=keyboard,
+                    )
+
+            if (
+                int(old_fbs) + int(old_fbo) > 0
+                and new_fbs + new_fbo == 0
+                and local <= 0
+                and reason != "mass"
+            ):
+                keyboard = self._depletion_keyboard(sku)
+                if keyboard is not None:
+                    await self.tg.broadcast(
+                        self.settings.telegram_chat_ids,
+                        (
+                            "🔴 Товар закончился в OZON FBS и FBO\n"
+                            f"Артикул продавца: {sku}\n"
+                            "OZON FBS: 0 шт. | OZON FBO: 0 шт.\n"
+                            "Основной склад: 0 шт.\n\n"
+                            "Добавить остаток на основной склад?"
+                        ),
+                        reply_markup=keyboard,
+                    )
+
+            if (
+                int(old_fbo) > 0
+                and new_fbo == 0
+                and reason == "marketplace_stock"
+                and local > 0
+            ):
+                keyboard = self._stock_keyboard(sku, "restore")
+                if keyboard is not None:
+                    await self.tg.broadcast(
+                        self.settings.telegram_chat_ids,
+                        (
+                            "🔵 Товар закончился на складе OZON\n"
+                            f"Артикул продавца: {sku}\n"
+                            f"Актуальный остаток основного склада: "
+                            f"{local} шт.\n\n"
+                            "Вернуть этот актуальный остаток на OZON FBS?"
+                        ),
+                        reply_markup=keyboard,
+                    )
+
+    async def audit_actionable_stocks(
+        self, chat_id: int
+    ) -> int:
+        if self.inventory is None:
+            return 0
+        await self.refresh_catalog_and_stocks(notify=False)
+        catalog, fbs, fbo = self._stock_snapshot()
+        actionable = 0
+        for sku in sorted(catalog):
+            fbs_qty = int(fbs.get(sku, 0))
+            fbo_qty = int(fbo.get(sku, 0))
+            local = self.inventory.local_quantity(sku)
+            reason = self.db.get_channel_suppression_reason(
+                "ozon", sku
+            )
+
+            if (
+                fbs_qty > 0
+                and fbo_qty > 0
+                and local > 0
+                and reason is None
+            ):
+                if self._stock_decision_matches(
+                    sku, "zero", fbs_qty, fbo_qty
                 ):
                     continue
                 keyboard = self._stock_keyboard(sku, "zero")
                 if keyboard is None:
                     continue
-                await self.tg.broadcast(
-                    self.settings.telegram_chat_ids,
+                actionable += 1
+                await self.tg.send_message(
+                    chat_id,
                     (
-                        "🟦 Товар появился на складе OZON\n"
+                        "🔎 /status: товар есть одновременно "
+                        "в OZON FBS и FBO\n"
                         f"Артикул продавца: {sku}\n"
-                        f"Основной склад: {local} шт.\n"
-                        f"Склад OZON: было 0 шт. → стало {new_qty} шт.\n\n"
-                        "Обнулить только OZON FBS? "
-                        "WB FBS останется равным основному складу."
+                        f"OZON FBS: {fbs_qty} шт. | "
+                        f"OZON FBO: {fbo_qty} шт.\n\n"
+                        "Обнулить OZON FBS?"
                     ),
                     reply_markup=keyboard,
                 )
                 continue
 
-            if (
-                old_qty > 0
-                and new_qty == 0
-                and self.db.get_channel_suppression_reason(
-                    "ozon", sku
-                ) == "marketplace_stock"
-            ):
-                if local <= 0:
-                    self.db.clear_channel_suppressed(
-                        "ozon", sku
+            if fbs_qty == 0 and fbo_qty == 0:
+                if reason == "mass":
+                    continue
+                if reason == "marketplace_stock" and local > 0:
+                    if self._stock_decision_matches(
+                        sku, "restore", fbs_qty, fbo_qty
+                    ):
+                        continue
+                    keyboard = self._stock_keyboard(
+                        sku, "restore"
+                    )
+                    if keyboard is None:
+                        continue
+                    actionable += 1
+                    await self.tg.send_message(
+                        chat_id,
+                        (
+                            "🔎 /status: товар закончился на складе OZON\n"
+                            f"Артикул продавца: {sku}\n"
+                            f"Актуальный основной склад: {local} шт.\n\n"
+                            "Вернуть остаток на OZON FBS?"
+                        ),
+                        reply_markup=keyboard,
                     )
                     continue
-                keyboard = self._stock_keyboard(
-                    sku, "restore"
-                )
-                if keyboard is None:
-                    continue
-                await self.tg.broadcast(
-                    self.settings.telegram_chat_ids,
-                    (
-                        "🔵 Товар закончился на складе OZON\n"
-                        f"Артикул продавца: {sku}\n"
-                        f"Актуальный остаток основного склада: {local} шт.\n\n"
-                        "Вернуть этот актуальный остаток на OZON FBS?"
-                    ),
-                    reply_markup=keyboard,
-                )
+                if local <= 0:
+                    if self._stock_decision_matches(
+                        sku, "add", fbs_qty, fbo_qty
+                    ):
+                        continue
+                    keyboard = self._depletion_keyboard(sku)
+                    if keyboard is None:
+                        continue
+                    actionable += 1
+                    await self.tg.send_message(
+                        chat_id,
+                        (
+                            "🔎 /status: товар закончился "
+                            "в OZON FBS и FBO\n"
+                            f"Артикул продавца: {sku}\n"
+                            "Основной склад: 0 шт.\n\n"
+                            "Добавить остаток на основной склад?"
+                        ),
+                        reply_markup=keyboard,
+                    )
+        return actionable
+
+    async def handle_message(
+        self, chat_id: int, text: str
+    ) -> bool:
+        parts = text.split()
+        if not parts:
+            return False
+        command = parts[0].split("@", 1)[0].lower()
+        args = parts[1:]
+        relevant = {
+            "/stocks_ozon",
+            "/ozon_fbs_zero_all",
+            "/ozon_fbs_restore",
+            "/fbs_zero_all_ozon",
+            "/fbs_restore_ozon",
+        }
+        if command not in relevant:
+            return False
+        if chat_id not in self.settings.telegram_chat_ids:
+            await self.tg.send_message(chat_id, "Доступ запрещён.")
+            return True
+
+        if command == "/stocks_ozon":
+            page = 1
+            if args:
+                try:
+                    page = max(1, int(args[0]))
+                except ValueError:
+                    await self.tg.send_message(
+                        chat_id,
+                        "Формат: /stocks_ozon или /stocks_ozon 2",
+                    )
+                    return True
+            await self.tg.send_message(
+                chat_id, "Обновляю остатки OZON…"
+            )
+            await self.refresh_catalog_and_stocks()
+            await self._send_stocks_page(chat_id, page)
+            return True
+
+        if command in {
+            "/ozon_fbs_zero_all",
+            "/fbs_zero_all_ozon",
+        }:
+            await self.tg.send_message(
+                chat_id,
+                (
+                    "⚠️ Обнулить OZON FBS для всех товаров?\n"
+                    "Основной локальный склад и WB FBS не изменятся."
+                ),
+                reply_markup={
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "Обнулить OZON FBS",
+                                "callback_data": "ozfbsallzero:yes",
+                            },
+                            {
+                                "text": "Отмена",
+                                "callback_data": "ozfbsallzero:skip",
+                            },
+                        ]
+                    ]
+                },
+            )
+            return True
+
+        mass_skus = [
+            sku
+            for sku in self.db.list_channel_suppressions("ozon")
+            if self.db.get_channel_suppression_reason(
+                "ozon", sku
+            )
+            == "mass"
+        ]
+        if not mass_skus:
+            await self.tg.send_message(
+                chat_id,
+                "ℹ️ Массово обнулённых OZON FBS-остатков нет.",
+            )
+            return True
+        total = sum(
+            self.inventory.local_quantity(sku)
+            for sku in mass_skus
+        )
+        await self.tg.send_message(
+            chat_id,
+            (
+                f"♻️ Восстановить OZON FBS из актуального "
+                f"основного склада?\n"
+                f"Товаров: {len(mass_skus)}, суммарно: {total} шт."
+            ),
+            reply_markup={
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "Восстановить OZON FBS",
+                            "callback_data": "ozfbsallrestore:yes",
+                        },
+                        {
+                            "text": "Отмена",
+                            "callback_data": "ozfbsallrestore:skip",
+                        },
+                    ]
+                ]
+            },
+        )
+        return True
+
+    async def _zero_all_fbs(
+        self,
+        chat_id: int,
+        message_id: int,
+        original: str,
+    ) -> None:
+        if self.inventory is None:
+            raise RuntimeError(
+                "Shared inventory is not initialized"
+            )
+        await self.refresh_catalog_and_stocks(notify=False)
+        _catalog, fbs, _fbo = self._stock_snapshot()
+        before = sum(int(value) for value in fbs.values())
+        count, _ = await self.inventory.suppress_ozon_mass()
+        await self._finish(
+            chat_id,
+            message_id,
+            original,
+            (
+                "✅ Все остатки OZON FBS обнулены.\n"
+                "Основной склад и WB FBS не изменены.\n"
+                f"Товаров: {count}, до обнуления: {before} шт."
+            ),
+        )
+
+    async def _restore_all_fbs(
+        self,
+        chat_id: int,
+        message_id: int,
+        original: str,
+    ) -> None:
+        if self.inventory is None:
+            raise RuntimeError(
+                "Shared inventory is not initialized"
+            )
+        restored, total = (
+            await self.inventory.restore_ozon_mass()
+        )
+        if restored == 0:
+            await self._finish(
+                chat_id,
+                message_id,
+                original,
+                "ℹ️ Массово обнулённых OZON FBS-остатков нет.",
+            )
+            return
+        await self._finish(
+            chat_id,
+            message_id,
+            original,
+            (
+                "✅ OZON FBS восстановлен из актуального "
+                "основного склада.\n"
+                f"Товаров: {restored}, суммарно: {total} шт."
+            ),
+        )
 
     @staticmethod
     def _keyboard(posting: OzonPosting) -> dict:
