@@ -122,12 +122,14 @@ class SharedInventory:
     ) -> dict[str, int]:
         """Apply one marketplace order once and sync the other channels."""
         changed: dict[str, int] = {}
+        touched: set[str] = set()
         async with self._lock:
             for raw_sku, raw_quantity in items:
                 sku = str(raw_sku).strip()
                 quantity = max(0, int(raw_quantity))
                 if not sku or quantity <= 0:
                     continue
+                touched.add(sku)
                 self._ensure_before_sale(
                     channel, sku, quantity
                 )
@@ -151,7 +153,10 @@ class SharedInventory:
                         quantity,
                     )
 
-            for sku in changed:
+            # Sync all touched SKUs even when the sale event was already
+            # recorded. This makes marketplace write failures retryable on the
+            # next order poll without decrementing local inventory twice.
+            for sku in touched:
                 await self._sync_sku_locked(
                     sku, exclude_channel=channel
                 )
