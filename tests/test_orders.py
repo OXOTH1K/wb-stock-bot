@@ -26,9 +26,10 @@ class FakeTelegram:
 class FakeWB:
     MARKETPLACE_BASE = "https://marketplace-api.wildberries.ru"
 
-    def __init__(self, orders=None, supplies=None):
+    def __init__(self, orders=None, supplies=None, statuses=None):
         self.orders = list(orders or [])
         self.supplies = list(supplies or [])
+        self.statuses = dict(statuses or {})
         self.boxes = {}
         self.created = []
         self.added = []
@@ -37,6 +38,17 @@ class FakeWB:
     async def _json(self, method, url, **kwargs):
         if method == "GET" and url.endswith("/api/v3/orders/new"):
             return {"orders": list(self.orders)}
+        if method == "POST" and url.endswith("/api/v3/orders/status"):
+            return {
+                "orders": [
+                    {
+                        "id": order_id,
+                        "supplierStatus": self.statuses.get(order_id, ("complete", "waiting"))[0],
+                        "wbStatus": self.statuses.get(order_id, ("complete", "waiting"))[1],
+                    }
+                    for order_id in kwargs["json"]["orders"]
+                ]
+            }
         if method == "GET" and url.endswith("/api/v3/supplies"):
             return {"next": 0, "supplies": list(self.supplies)}
         if method == "POST" and url.endswith("/api/v3/supplies"):
@@ -89,8 +101,8 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
             "offices": ["СЦ Тест"],
         }
 
-    def monitor(self, orders=None, supplies=None):
-        wb = FakeWB(orders, supplies)
+    def monitor(self, orders=None, supplies=None, statuses=None):
+        wb = FakeWB(orders, supplies, statuses)
         tg = FakeTelegram()
         return OrderMonitor(self.settings, wb, tg, self.db, 77), wb, tg
 
@@ -141,6 +153,20 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(count, 0)
         self.assertEqual(tg.sent, [])
+
+
+    async def test_refresh_tracks_confirm_then_complete_for_crm(self):
+        monitor, wb, _ = self.monitor([], [], {501: ("confirm", "waiting")})
+        monitor._set_state(501, "assigned", "WB-GI-1")
+
+        await monitor.refresh()
+        row = next(x for x in self.db.list_order_state() if x["order_id"] == 501)
+        self.assertEqual(row["supplier_status"], "confirm")
+
+        wb.statuses[501] = ("complete", "waiting")
+        await monitor.refresh()
+        row = next(x for x in self.db.list_order_state() if x["order_id"] == 501)
+        self.assertEqual(row["supplier_status"], "complete")
 
     async def test_existing_supply_add_does_not_create_box(self):
         supply = {"id": "WB-GI-7", "name": "Сегодня", "done": False, "cargoType": 1, "crossBorderType": 0}
