@@ -39,16 +39,25 @@ class FakeWB:
         if method == "GET" and url.endswith("/api/v3/orders/new"):
             return {"orders": list(self.orders)}
         if method == "POST" and url.endswith("/api/v3/orders/status"):
-            return {
-                "orders": [
+            rows = []
+            current_ids = {int(order["id"]) for order in self.orders}
+            for order_id in kwargs["json"]["orders"]:
+                default = (
+                    ("new", "waiting")
+                    if int(order_id) in current_ids
+                    else ("complete", "waiting")
+                )
+                supplier_status, wb_status = self.statuses.get(
+                    int(order_id), default
+                )
+                rows.append(
                     {
                         "id": order_id,
-                        "supplierStatus": self.statuses.get(order_id, ("complete", "waiting"))[0],
-                        "wbStatus": self.statuses.get(order_id, ("complete", "waiting"))[1],
+                        "supplierStatus": supplier_status,
+                        "wbStatus": wb_status,
                     }
-                    for order_id in kwargs["json"]["orders"]
-                ]
-            }
+                )
+            return {"orders": rows}
         if method == "GET" and url.endswith("/api/v3/supplies"):
             return {"next": 0, "supplies": list(self.supplies)}
         if method == "POST" and url.endswith("/api/v3/supplies"):
@@ -154,6 +163,24 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(count, 0)
         self.assertEqual(tg.sent, [])
 
+
+    async def test_orders_new_row_does_not_override_confirm_status(self):
+        monitor, _, tg = self.monitor(
+            [self.row()],
+            [],
+            {501: ("confirm", "waiting")},
+        )
+        monitor._set_state(501, "assigned", "WB-GI-1")
+
+        await monitor.refresh()
+
+        row = next(
+            x for x in self.db.list_order_state()
+            if x["order_id"] == 501
+        )
+        self.assertEqual(row["supplier_status"], "confirm")
+        self.assertNotIn(501, monitor.current_new_orders)
+        self.assertEqual(tg.broadcasts, [])
 
     async def test_refresh_tracks_confirm_then_complete_for_crm(self):
         monitor, wb, _ = self.monitor([], [], {501: ("confirm", "waiting")})
