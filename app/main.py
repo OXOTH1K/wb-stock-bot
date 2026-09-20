@@ -58,7 +58,12 @@ async def amain() -> None:
                 ozon = OzonIntegration(
                     settings, ozon_client, tg, db
                 )
-                await ozon.initialize()
+                try:
+                    await ozon.initialize()
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Ozon initial sync failed; background loops will retry"
+                    )
                 logging.getLogger(__name__).info(
                     "Ozon integration enabled"
                 )
