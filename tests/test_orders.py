@@ -282,6 +282,8 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_callback(123, 9, "ordadd:501:WB-GI-7", "alert")
         self.assertEqual(wb.added, [("WB-GI-7", [501])])
         self.assertEqual(wb.box_adds, [])
+        self.assertNotIn(501, monitor.current_new_orders)
+        self.assertEqual(monitor.current_supply_orders[501], "WB-GI-7")
         self.assertIn("Заказ добавлен", tg.edits[-1][2])
 
     async def test_new_supply_name_does_not_include_article(self):
@@ -302,6 +304,8 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(wb.created), 1)
         self.assertEqual(wb.box_adds, [("WB-GI-1", 1)])
         self.assertEqual(len(wb.boxes["WB-GI-1"]), 1)
+        self.assertNotIn(501, monitor.current_new_orders)
+        self.assertEqual(monitor.current_supply_orders[501], "WB-GI-1")
         self.assertIn("Создано одно грузоместо", tg.edits[0][2])
 
     async def test_create_refreshes_choices_if_supply_appeared(self):
