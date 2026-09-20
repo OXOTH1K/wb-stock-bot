@@ -189,8 +189,11 @@ class OzonClient:
             for offer_id, product_id in sorted(raw_products.items())
         ]
 
-    async def get_fbs_stocks(self) -> dict[str, int]:
-        result: dict[str, int] = {}
+    async def get_stock_breakdown(
+        self,
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        fbs: dict[str, int] = {}
+        fbo: dict[str, int] = {}
         cursor = ""
         seen: set[str] = set()
 
@@ -213,28 +216,140 @@ class OzonClient:
                 offer_id = str(row.get("offer_id") or "").strip()
                 if not offer_id:
                     continue
-                total = 0
+                totals = {"fbs": 0, "fbo": 0}
                 stocks = row.get("stocks") or []
                 if isinstance(stocks, dict):
                     stocks = list(stocks.values())
                 for stock in stocks:
                     if not isinstance(stock, dict):
                         continue
-                    if str(stock.get("type") or "").lower() != "fbs":
+                    kind = str(stock.get("type") or "").lower()
+                    if kind not in totals:
                         continue
-                    total += max(0, int(stock.get("present") or 0))
-                result[offer_id] = total
+                    totals[kind] += max(
+                        0, int(stock.get("present") or 0)
+                    )
+                fbs[offer_id] = totals["fbs"]
+                fbo[offer_id] = totals["fbo"]
 
             next_cursor = str((data or {}).get("cursor") or "")
             has_more = bool((data or {}).get("has_next"))
-            if not rows or not next_cursor or next_cursor == cursor or next_cursor in seen:
+            if (
+                not rows
+                or not next_cursor
+                or next_cursor == cursor
+                or next_cursor in seen
+            ):
                 break
             if not has_more and len(rows) < 1000:
                 break
             seen.add(next_cursor)
             cursor = next_cursor
 
+        return fbs, fbo
+
+    async def get_fbs_stocks(self) -> dict[str, int]:
+        fbs, _ = await self.get_stock_breakdown()
+        return fbs
+
+    async def get_fbs_warehouses(self) -> list[dict]:
+        result: list[dict] = []
+        cursor = ""
+        seen: set[str] = set()
+
+        while True:
+            payload: dict[str, object] = {"limit": 100}
+            if cursor:
+                payload["cursor"] = cursor
+
+            data = await self._json(
+                "/v2/warehouse/list", payload
+            )
+            raw_result = (data or {}).get("result")
+            if isinstance(raw_result, list):
+                rows = raw_result
+            elif isinstance(raw_result, dict):
+                rows = raw_result.get("warehouses", [])
+            else:
+                rows = (data or {}).get("warehouses", [])
+            if not isinstance(rows, list):
+                rows = []
+
+            result.extend(
+                row
+                for row in rows
+                if isinstance(row, dict)
+                and int(row.get("warehouse_id") or 0) > 0
+            )
+
+            next_cursor = str(
+                (data or {}).get("cursor")
+                or (
+                    raw_result.get("cursor")
+                    if isinstance(raw_result, dict)
+                    else ""
+                )
+                or ""
+            )
+            has_next = (data or {}).get("has_next")
+            if isinstance(raw_result, dict):
+                has_next = raw_result.get(
+                    "has_next", has_next
+                )
+            if (
+                not rows
+                or not next_cursor
+                or next_cursor == cursor
+                or next_cursor in seen
+                or has_next is False
+            ):
+                break
+            seen.add(next_cursor)
+            cursor = next_cursor
+
         return result
+
+    async def set_fbs_stocks(
+        self,
+        warehouse_id: int,
+        quantities: dict[str, int],
+    ) -> None:
+        rows = [
+            {
+                "offer_id": str(sku),
+                "stock": int(quantity),
+                "warehouse_id": int(warehouse_id),
+            }
+            for sku, quantity in quantities.items()
+        ]
+        if any(row["stock"] < 0 for row in rows):
+            raise ValueError("Ozon stock cannot be negative")
+
+        for start in range(0, len(rows), 100):
+            chunk = rows[start : start + 100]
+            data = await self._json(
+                "/v2/products/stocks",
+                {"stocks": chunk},
+            )
+            failures = []
+            for item in (data or {}).get("result", []):
+                if bool(item.get("updated")):
+                    continue
+                errors = item.get("errors") or []
+                detail = "; ".join(
+                    str(error.get("message") or error.get("code") or "")
+                    for error in errors
+                    if isinstance(error, dict)
+                )
+                failures.append(
+                    f"{item.get('offer_id') or 'unknown'}: "
+                    f"{detail or 'not updated'}"
+                )
+            if failures:
+                raise OzonAPIError(
+                    409,
+                    "stock update failed: " + " | ".join(failures),
+                )
 
     @staticmethod
     def _parse_posting(row: dict) -> OzonPosting:

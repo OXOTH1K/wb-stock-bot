@@ -29,6 +29,7 @@ class Settings:
     ozon_api_key: str
     ozon_order_check_interval: int
     ozon_stock_check_interval: int
+    ozon_warehouse_id: int | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -51,6 +52,12 @@ class Settings:
 
         ozon_client_id = os.getenv("OZON_CLIENT_ID", "").strip()
         ozon_api_key = os.getenv("OZON_API_KEY", "").strip()
+        raw_ozon_warehouse_id = os.getenv("OZON_WAREHOUSE_ID", "").strip()
+        ozon_warehouse_id = (
+            int(raw_ozon_warehouse_id)
+            if raw_ozon_warehouse_id
+            else None
+        )
         if bool(ozon_client_id) != bool(ozon_api_key):
             raise RuntimeError(
                 "OZON_CLIENT_ID and OZON_API_KEY must be set together"
@@ -112,4 +119,5 @@ class Settings:
                     os.getenv("FBS_CHECK_INTERVAL", "300"),
                 )
             ),
+            ozon_warehouse_id=ozon_warehouse_id,
         )

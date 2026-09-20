@@ -64,6 +64,25 @@ class FakeOzon:
     async def get_fbs_stocks(self):
         return dict(self.stocks)
 
+    async def get_stock_breakdown(self):
+        return dict(self.stocks), {
+            "SKU-A": 0,
+            "OZON-ONLY": 0,
+        }
+
+    async def get_fbs_warehouses(self):
+        return [
+            {
+                "warehouse_id": 77,
+                "name": "Ozon FBS",
+            }
+        ]
+
+    async def set_fbs_stocks(self, warehouse_id, quantities):
+        self.stocks.update(
+            {str(k): int(v) for k, v in quantities.items()}
+        )
+
     async def get_awaiting_packaging(self):
         return list(self.postings)
 
@@ -252,6 +271,60 @@ class OzonClientParsingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.requests[0][1]["limit"],
             100,
+        )
+
+    async def test_warehouse_list_uses_v2_cursor_pagination(self):
+        client = ParsingOzonClient(
+            [
+                (
+                    "/v2/warehouse/list",
+                    {
+                        "result": {
+                            "warehouses": [
+                                {
+                                    "warehouse_id": 10,
+                                    "name": "First",
+                                }
+                            ],
+                            "cursor": "next-page",
+                            "has_next": True,
+                        }
+                    },
+                ),
+                (
+                    "/v2/warehouse/list",
+                    {
+                        "result": {
+                            "warehouses": [
+                                {
+                                    "warehouse_id": 20,
+                                    "name": "Second",
+                                }
+                            ],
+                            "cursor": "",
+                            "has_next": False,
+                        }
+                    },
+                ),
+            ]
+        )
+
+        warehouses = await client.get_fbs_warehouses()
+
+        self.assertEqual(
+            [row["warehouse_id"] for row in warehouses],
+            [10, 20],
+        )
+        self.assertEqual(
+            client.requests[0],
+            ("/v2/warehouse/list", {"limit": 100}),
+        )
+        self.assertEqual(
+            client.requests[1],
+            (
+                "/v2/warehouse/list",
+                {"limit": 100, "cursor": "next-page"},
+            ),
         )
 
     async def test_ship_sends_single_package_and_verifies_status(self):
