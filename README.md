@@ -40,8 +40,9 @@
 ```env
 OZON_CLIENT_ID=
 OZON_API_KEY=
-# Если склад OZON один, бот выберет его автоматически.
-# Если FBS/rFBS-складов несколько — укажите нужный warehouse_id.
+# Если активный FBS/rFBS-склад OZON один, бот выберет его автоматически.
+# Архивные/заблокированные склады при авто-выборе не учитываются.
+# Если активных FBS/rFBS-складов несколько — укажите нужный warehouse_id.
 OZON_WAREHOUSE_ID=
 OZON_ORDER_CHECK_INTERVAL=30
 OZON_STOCK_CHECK_INTERVAL=300

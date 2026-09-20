@@ -104,20 +104,44 @@ class OzonIntegration:
             return self.warehouse_id
 
         warehouses = await self.client.get_fbs_warehouses()
-        if len(warehouses) == 1:
+
+        # Ozon returns archived/blocked/etc. warehouses together with
+        # active ones. In Seller API status="created" means the warehouse
+        # is active; archived warehouses use status="disabled".
+        status_known = any(
+            str(row.get("status") or "").strip()
+            for row in warehouses
+        )
+        candidates = (
+            [
+                row
+                for row in warehouses
+                if str(row.get("status") or "").strip().lower()
+                == "created"
+            ]
+            if status_known
+            else warehouses
+        )
+
+        if len(candidates) == 1:
             self.warehouse_id = int(
-                warehouses[0]["warehouse_id"]
+                candidates[0]["warehouse_id"]
             )
             log.info(
-                "Ozon FBS warehouse auto-selected: %s (%s)",
-                warehouses[0].get("name") or "—",
+                "Ozon active FBS warehouse auto-selected: %s (%s)",
+                candidates[0].get("name") or "—",
                 self.warehouse_id,
             )
             return self.warehouse_id
-        if len(warehouses) > 1:
+        if len(candidates) > 1:
             log.warning(
-                "Multiple Ozon FBS/rFBS warehouses found; "
+                "Multiple active Ozon FBS/rFBS warehouses found; "
                 "set OZON_WAREHOUSE_ID to enable stock writes"
+            )
+        elif status_known and warehouses:
+            log.warning(
+                "No active Ozon FBS/rFBS warehouse found "
+                "(status=created)"
             )
         else:
             log.warning("No Ozon FBS/rFBS warehouse found")
@@ -131,8 +155,9 @@ class OzonIntegration:
         warehouse_id = await self._resolve_warehouse()
         if warehouse_id is None:
             raise RuntimeError(
-                "OZON_WAREHOUSE_ID is required when more than one "
-                "Ozon FBS/rFBS warehouse exists"
+                "Could not auto-select an active Ozon FBS/rFBS "
+                "warehouse; set OZON_WAREHOUSE_ID if more than one "
+                "active warehouse exists"
             )
         await self.client.set_fbs_stocks(
             warehouse_id, {str(sku): int(quantity)}
