@@ -812,6 +812,15 @@ class StockMonitorService:
         # старые индивидуальные автоснимки больше не должны предлагаться.
         # Очищаем их только после успешной записи нулей в WB.
         self.db.clear_saved_fbs("wb_auto")
+        if self.inventory is not None:
+            for product in self.products.values():
+                sku = (
+                    product.vendor_code
+                    or f"WB-{product.nm_id}"
+                )
+                self.db.set_channel_suppressed(
+                    "wb", sku, True
+                )
         await self.refresh_fbs(notify=False)
         self.db.update_many(
             "total",
@@ -854,7 +863,20 @@ class StockMonitorService:
                 ),
             )
             return
-        await self.wb.set_fbs_stocks(self.warehouse.id, saved_by_chrt)
+        if self.inventory is not None:
+            for product in self.products.values():
+                sku = (
+                    product.vendor_code
+                    or f"WB-{product.nm_id}"
+                )
+                self.db.set_channel_suppressed(
+                    "wb", sku, False
+                )
+            await self.inventory.sync_all()
+        else:
+            await self.wb.set_fbs_stocks(
+                self.warehouse.id, saved_by_chrt
+            )
         self.db.clear_saved_fbs("mass")
         await self.refresh_fbs(notify=False)
         self.db.update_many(
@@ -1083,6 +1105,63 @@ class StockMonitorService:
             nm_id = product.nm_id
             fbs_qty = self.fbs_stock.get(nm_id, 0)
             wb_qty = self.wb_stock.get(nm_id, 0)
+
+            if self.inventory is not None:
+                sku = product.vendor_code or f"WB-{product.nm_id}"
+                suppressed = self.inventory.is_suppressed(
+                    "wb", sku
+                )
+
+                if fbs_qty > 0 and wb_qty > 0 and not suppressed:
+                    if self.db.stock_decision_matches(
+                        nm_id,
+                        "fbszero",
+                        fbs_qty,
+                        wb_qty,
+                        "skip",
+                    ):
+                        continue
+                    actionable += 1
+                    local_qty = self.inventory.local_quantity(sku)
+                    await self.tg.send_message(
+                        chat_id,
+                        (
+                            "🔎 /status: товар есть на WB FBS и складе WB\n"
+                            f"Артикул продавца: {product.vendor_code or '—'}\n"
+                            f"Основной склад: {local_qty} шт.\n"
+                            f"WB FBS: {fbs_qty} шт. | Склады WB: {wb_qty} шт.\n\n"
+                            "Обнулить FBS только на WB?"
+                        ),
+                        reply_markup=self._wb_appearance_action_keyboard(
+                            nm_id
+                        ),
+                    )
+                    continue
+
+                if fbs_qty == 0 and wb_qty == 0 and suppressed:
+                    if self.db.stock_decision_matches(
+                        nm_id,
+                        "fbsrestore",
+                        fbs_qty,
+                        wb_qty,
+                        "skip",
+                    ):
+                        continue
+                    actionable += 1
+                    local_qty = self.inventory.local_quantity(sku)
+                    await self.tg.send_message(
+                        chat_id,
+                        (
+                            "🔎 /status: склад WB закончился, WB FBS обнулён\n"
+                            f"Артикул продавца: {product.vendor_code or '—'}\n"
+                            f"Актуальный основной склад: {local_qty} шт.\n\n"
+                            "Вернуть этот остаток на WB FBS?"
+                        ),
+                        reply_markup=self._saved_restore_keyboard(
+                            nm_id, local_qty
+                        ),
+                    )
+                continue
 
             if fbs_qty > 0 and wb_qty > 0:
                 if self.db.stock_decision_matches(
