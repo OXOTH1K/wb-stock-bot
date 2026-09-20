@@ -109,6 +109,16 @@ class StateDB:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS crm_order_status (
+                order_id INTEGER PRIMARY KEY,
+                supplier_status TEXT NOT NULL,
+                wb_status TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
 
     def get(self, source: str, nm_id: int) -> int | None:
@@ -497,6 +507,30 @@ class StateDB:
                 (str(source), str(sku).strip(), quantity, now),
             )
 
+    def set_order_runtime_status(
+        self, order_id: int, supplier_status: str, wb_status: str = ""
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO crm_order_status(
+                    order_id, supplier_status, wb_status, updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    supplier_status = excluded.supplier_status,
+                    wb_status = excluded.wb_status,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(order_id),
+                    str(supplier_status),
+                    str(wb_status or ""),
+                    now,
+                ),
+            )
+
     def set_order_assembled(self, order_id: int, assembled: bool) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self.conn:
@@ -537,9 +571,12 @@ class StateDB:
                 s.supply_id,
                 s.first_seen_at,
                 s.updated_at,
-                COALESCE(m.assembled, 0)
+                COALESCE(m.assembled, 0),
+                r.supplier_status,
+                r.wb_status
             FROM order_state AS s
             LEFT JOIN crm_order_meta AS m ON m.order_id = s.order_id
+            LEFT JOIN crm_order_status AS r ON r.order_id = s.order_id
             ORDER BY s.first_seen_at DESC, s.order_id DESC
             LIMIT ?
             """,
@@ -555,6 +592,10 @@ class StateDB:
                 "first_seen_at": str(first_seen_at),
                 "updated_at": str(updated_at),
                 "assembled": bool(assembled),
+                "supplier_status": (
+                    None if supplier_status is None else str(supplier_status)
+                ),
+                "wb_status": None if wb_status is None else str(wb_status),
             }
             for (
                 order_id,
@@ -565,6 +606,8 @@ class StateDB:
                 first_seen_at,
                 updated_at,
                 assembled,
+                supplier_status,
+                wb_status,
             ) in rows
         ]
 
