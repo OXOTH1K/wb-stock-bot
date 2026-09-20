@@ -130,11 +130,12 @@ function renderInventory() {
     const state = x.fbs_suppressed
       ? '<span class="badge warn">FBS намеренно 0</span>'
       : drift ? '<span class="badge bad">расхождение</span>' : '<span class="badge ok">синхронно</span>';
+    const encodedSku = encodeURIComponent(x.sku);
     html += '<tr><td><div class="sku">'+esc(x.sku)+'</div><div class="title">'+esc(x.title)+'</div></td>'+
-      '<td><div class="stock-edit"><button class="mini" onclick="adjustStock('+JSON.stringify(x.sku)+',-1)">−1</button>'+
+      '<td><div class="stock-edit"><button class="mini" onclick="adjustStock(decodeURIComponent(\''+encodedSku+'\'),-1)">−1</button>'+
       '<input id="qty-'+x.key+'" type="number" min="0" value="'+esc(x.local)+'">'+
-      '<button class="mini" onclick="setStock('+JSON.stringify(x.sku)+','+JSON.stringify(x.key)+')">✓</button>'+
-      '<button class="mini" onclick="adjustStock('+JSON.stringify(x.sku)+',1)">+1</button></div></td>'+
+      '<button class="mini" onclick="setStock(decodeURIComponent(\''+encodedSku+'\'),'+Number(x.key)+')">✓</button>'+
+      '<button class="mini" onclick="adjustStock(decodeURIComponent(\''+encodedSku+'\'),1)">+1</button></div></td>'+
       '<td class="qty">'+esc(x.wb_fbs)+'</td><td class="qty">'+esc(x.wb_warehouses)+'</td>'+
       '<td>'+(x.ozon_fbs === null ? '<span class="muted">не подключено</span>' : '<span class="qty">'+esc(x.ozon_fbs)+'</span>')+'</td>'+
       '<td>'+state+'</td></tr>';
