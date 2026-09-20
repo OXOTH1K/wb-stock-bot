@@ -296,7 +296,7 @@ class StockMonitorService:
                         "Вернуть сохранённый остаток на FBS?"
                     )
                     keyboard = self._saved_restore_keyboard(nm_id, saved_total)
-                    else:
+                else:
                     text = (
                         "🔴 Товар закончился везде\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
