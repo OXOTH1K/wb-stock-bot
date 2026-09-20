@@ -139,42 +139,87 @@ class CRMServer:
         return int(self.service.fbs_stock.get(nm_id, 0))
 
     def _inventory_items(self) -> list[dict[str, Any]]:
-        products = sorted(
-            self.service.products.values(),
-            key=lambda p: (
-                (p.vendor_code or "").lower(),
-                (p.title or "").lower(),
-                p.nm_id,
-            ),
+        wb_by_sku = {
+            self._sku(product.nm_id, product.vendor_code): product
+            for product in self.service.products.values()
+        }
+        ozon_catalog = self.db.get_channel_catalog("ozon")
+        all_skus = sorted(set(wb_by_sku) | set(ozon_catalog))
+        ozon_stock = self.db.get_channel_stock(
+            "ozon_fbs", tuple(all_skus)
         )
-        skus = [self._sku(p.nm_id, p.vendor_code) for p in products]
 
-        for product, sku in zip(products, skus):
-            self.db.ensure_local_stock(
-                sku,
-                self._bootstrap_local_quantity(product.nm_id),
-            )
+        for sku in all_skus:
+            wb_product = wb_by_sku.get(sku)
+            if wb_product is not None:
+                initial = self._bootstrap_local_quantity(
+                    wb_product.nm_id
+                )
+            else:
+                initial = int(ozon_stock.get(sku, 0))
+            self.db.ensure_local_stock(sku, initial)
 
-        local = self.db.get_local_stock(tuple(skus))
-        ozon = self.db.get_channel_stock("ozon_fbs", tuple(skus))
+        local = self.db.get_local_stock(tuple(all_skus))
 
         items: list[dict[str, Any]] = []
-        for product, sku in zip(products, skus):
+        for index, sku in enumerate(all_skus):
+            wb_product = wb_by_sku.get(sku)
+            ozon_product = ozon_catalog.get(sku)
             local_qty = int(local.get(sku, 0))
-            wb_fbs = int(self.service.fbs_stock.get(product.nm_id, 0))
-            wb_warehouses = int(self.service.wb_stock.get(product.nm_id, 0))
-            saved = self.db.get_saved_product_fbs("wb_auto", product.nm_id)
+
+            wb_fbs: int | None = None
+            wb_warehouses: int | None = None
+            fbs_suppressed = False
+            if wb_product is not None:
+                wb_fbs = int(
+                    self.service.fbs_stock.get(wb_product.nm_id, 0)
+                )
+                wb_warehouses = int(
+                    self.service.wb_stock.get(wb_product.nm_id, 0)
+                )
+                saved = self.db.get_saved_product_fbs(
+                    "wb_auto", wb_product.nm_id
+                )
+                fbs_suppressed = bool(saved) and wb_fbs == 0
+
+            ozon_fbs: int | None = None
+            if ozon_product is not None:
+                ozon_fbs = int(ozon_stock.get(sku, 0))
+
+            drift_channels: list[str] = []
+            if (
+                wb_fbs is not None
+                and not fbs_suppressed
+                and wb_fbs != local_qty
+            ):
+                drift_channels.append("WB")
+            if ozon_fbs is not None and ozon_fbs != local_qty:
+                drift_channels.append("OZON")
+
+            title = ""
+            if wb_product is not None:
+                title = str(wb_product.title or "")
+            if not title and ozon_product is not None:
+                title = str(ozon_product.get("title") or "")
+
             items.append(
                 {
-                    "key": str(product.nm_id),
-                    "nm_id": int(product.nm_id),
+                    "key": f"p{index}",
+                    "nm_id": (
+                        None
+                        if wb_product is None
+                        else int(wb_product.nm_id)
+                    ),
                     "sku": sku,
-                    "title": product.title or "",
+                    "title": title or sku,
                     "local": local_qty,
                     "wb_fbs": wb_fbs,
                     "wb_warehouses": wb_warehouses,
-                    "ozon_fbs": ozon.get(sku),
-                    "fbs_suppressed": bool(saved) and wb_fbs == 0,
+                    "ozon_fbs": ozon_fbs,
+                    "wb_exists": wb_product is not None,
+                    "ozon_exists": ozon_product is not None,
+                    "fbs_suppressed": fbs_suppressed,
+                    "drift_channels": drift_channels,
                 }
             )
         return items
@@ -186,14 +231,19 @@ class CRMServer:
                 "items": items,
                 "totals": {
                     "local": sum(item["local"] for item in items),
-                    "wb_fbs": sum(item["wb_fbs"] for item in items),
+                    "wb_fbs": sum(
+                        item["wb_fbs"] or 0 for item in items
+                    ),
                     "wb_warehouses": sum(
-                        item["wb_warehouses"] for item in items
+                        item["wb_warehouses"] or 0 for item in items
+                    ),
+                    "ozon_fbs": sum(
+                        item["ozon_fbs"] or 0 for item in items
                     ),
                     "drift": sum(
                         1
                         for item in items
-                        if item["local"] != item["wb_fbs"]
+                        if item["drift_channels"]
                     ),
                 },
             }
@@ -215,10 +265,11 @@ class CRMServer:
         return data
 
     def _known_skus(self) -> set[str]:
-        return {
+        wb = {
             self._sku(product.nm_id, product.vendor_code)
             for product in self.service.products.values()
         }
+        return wb | set(self.db.get_channel_catalog("ozon"))
 
     async def adjust_inventory(self, request: web.Request) -> web.Response:
         data = await self._payload(request)
