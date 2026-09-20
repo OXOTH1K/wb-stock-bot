@@ -472,6 +472,62 @@ class OzonIntegration:
             ]
         }
 
+    async def _notify_current_depletion(
+        self, sku: str
+    ) -> None:
+        if self.inventory is None:
+            return
+        fbs_qty = int(
+            self.db.get_channel_stock(
+                "ozon_fbs", (sku,)
+            ).get(sku, 0)
+        )
+        fbo_qty = int(
+            self.db.get_channel_stock(
+                "ozon_fbo", (sku,)
+            ).get(sku, 0)
+        )
+        local = self.inventory.local_quantity(sku)
+        reason = self.db.get_channel_suppression_reason(
+            "ozon", sku
+        )
+        if (
+            fbs_qty != 0
+            or fbo_qty != 0
+            or local > 0
+            or reason == "mass"
+        ):
+            return
+        if self._stock_decision_matches(
+            sku,
+            "add",
+            fbs_qty,
+            fbo_qty,
+            "notified",
+        ):
+            return
+        keyboard = self._depletion_keyboard(sku)
+        if keyboard is None:
+            return
+        await self.tg.broadcast(
+            self.settings.telegram_chat_ids,
+            (
+                "🔴 Товар закончился в OZON FBS и FBO\n"
+                f"Артикул продавца: {sku}\n"
+                "OZON FBS: 0 шт. | OZON FBO: 0 шт.\n"
+                "Основной склад: 0 шт.\n\n"
+                "Добавить остаток на основной склад?"
+            ),
+            reply_markup=keyboard,
+        )
+        self._save_stock_decision(
+            sku,
+            "add",
+            fbs_qty,
+            fbo_qty,
+            "notified",
+        )
+
     async def _notify_stock_transitions(
         self,
         previous_fbs: dict[str, int],
@@ -536,39 +592,10 @@ class OzonIntegration:
                     )
 
             if (
-                new_fbs + new_fbo == 0
-                and local <= 0
-                and reason != "mass"
+                int(old_fbs) + int(old_fbo) > 0
+                and new_fbs + new_fbo == 0
             ):
-                keyboard = self._depletion_keyboard(sku)
-                if (
-                    keyboard is not None
-                    and not self._stock_decision_matches(
-                        sku,
-                        "add",
-                        new_fbs,
-                        new_fbo,
-                        "notified",
-                    )
-                ):
-                    await self.tg.broadcast(
-                        self.settings.telegram_chat_ids,
-                        (
-                            "🔴 Товар закончился в OZON FBS и FBO\n"
-                            f"Артикул продавца: {sku}\n"
-                            "OZON FBS: 0 шт. | OZON FBO: 0 шт.\n"
-                            "Основной склад: 0 шт.\n\n"
-                            "Добавить остаток на основной склад?"
-                        ),
-                        reply_markup=keyboard,
-                    )
-                    self._save_stock_decision(
-                        sku,
-                        "add",
-                        new_fbs,
-                        new_fbo,
-                        "notified",
-                    )
+                await self._notify_current_depletion(sku)
 
             if (
                 int(old_fbo) > 0
@@ -931,7 +958,11 @@ class OzonIntegration:
             if self._state(posting.posting_number) is None
         ]
         if unseen and self.inventory is not None:
-            await self.inventory.consume_ozon_postings(unseen)
+            changed = await self.inventory.consume_ozon_postings(
+                unseen
+            )
+            for sku in changed:
+                await self._notify_current_depletion(sku)
         for posting in unseen:
             await self._notify(posting)
             self._remember(posting.posting_number)
