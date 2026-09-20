@@ -170,11 +170,22 @@ async def amain() -> None:
                             f"{exc}",
                         )
                     return
-                if (
-                    ozon is not None
-                    and await ozon.handle_message(chat_id, text)
-                ):
-                    return
+                if ozon is not None:
+                    try:
+                        if await ozon.handle_message(
+                            chat_id, text
+                        ):
+                            return
+                    except Exception as exc:
+                        logging.getLogger(__name__).exception(
+                            "Ozon command failed: %s", command
+                        )
+                        await tg.send_message(
+                            chat_id,
+                            "⚠️ Не удалось выполнить OZON-команду: "
+                            f"{exc}",
+                        )
+                        return
                 await service.handle_message(chat_id, text)
 
             async def callback_handler(
