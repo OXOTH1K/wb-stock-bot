@@ -18,7 +18,7 @@ INDEX_HTML = r"""<!doctype html>
     .shell{max-width:1400px;margin:0 auto;padding:24px}
     header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
     h1{font-size:24px;margin:0}.sub{color:var(--muted);font-size:13px}
-    .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+    .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:visible}
     .panel-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center}
     .panel-head h2{font-size:16px;margin:0}.actions{display:flex;gap:8px;align-items:center}
     .btn{border:1px solid var(--line);background:#fff;padding:7px 10px;border-radius:8px}
@@ -26,7 +26,7 @@ INDEX_HTML = r"""<!doctype html>
     .cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
     .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
     .card .n{font-size:24px;font-weight:700}.card .l{color:var(--muted);margin-top:3px}
-    .table-wrap{overflow:auto;max-height:calc(100vh - 265px)}
+    .table-wrap{overflow:visible}
     table{width:100%;border-collapse:separate;border-spacing:0;min-width:920px}
     th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
     th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);background:#fafafa;position:sticky;top:0;z-index:5;box-shadow:0 1px 0 var(--line)}
@@ -40,7 +40,7 @@ INDEX_HTML = r"""<!doctype html>
     .notice{padding:10px 12px;border-radius:9px;background:#fff7ed;color:#92400e;font-size:13px;margin-bottom:12px}
     .search{border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:230px}
     .spinner{color:var(--muted);padding:20px}.error{color:var(--bad);padding:16px}
-    @media(max-width:800px){.shell{padding:14px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.table-wrap{max-height:calc(100vh - 300px)}header{align-items:flex-start;flex-direction:column}.panel-head{align-items:flex-start;flex-direction:column}.search{width:100%;min-width:0}}
+    @media(max-width:800px){.shell{padding:14px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:flex-start;flex-direction:column}.panel-head{align-items:flex-start;flex-direction:column}.search{width:100%;min-width:0}}
   </style>
 </head>
 <body>
