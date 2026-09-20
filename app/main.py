@@ -126,6 +126,13 @@ async def amain() -> None:
                                 chat_id
                             )
                         )
+                        ozon_stock_count = (
+                            await ozon.audit_actionable_stocks(
+                                chat_id
+                            )
+                            if ozon is not None
+                            else 0
+                        )
                         summary = (
                             service._format_status()
                             + "\n\n"
@@ -140,9 +147,16 @@ async def amain() -> None:
                                 f"{ozon_order_count}\n"
                             )
                         summary += (
-                            "Ситуаций по остаткам, требующих решения: "
-                            f"{stock_count}"
+                            "Ситуаций WB по остаткам, требующих решения: "
+                            f"{stock_count}\n"
                         )
+                        if ozon is not None:
+                            summary += (
+                                "Ситуаций OZON по остаткам, требующих решения: "
+                                f"{ozon_stock_count}"
+                            )
+                        else:
+                            summary = summary.rstrip()
                         if wb_note:
                             summary += "\n" + wb_note
                         await tg.send_message(chat_id, summary)
@@ -156,6 +170,22 @@ async def amain() -> None:
                             f"{exc}",
                         )
                     return
+                if ozon is not None:
+                    try:
+                        if await ozon.handle_message(
+                            chat_id, text
+                        ):
+                            return
+                    except Exception as exc:
+                        logging.getLogger(__name__).exception(
+                            "Ozon command failed: %s", command
+                        )
+                        await tg.send_message(
+                            chat_id,
+                            "⚠️ Не удалось выполнить OZON-команду: "
+                            f"{exc}",
+                        )
+                        return
                 await service.handle_message(chat_id, text)
 
             async def callback_handler(

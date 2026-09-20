@@ -38,6 +38,7 @@ class FakeOzon:
             OzonProduct("OZON-ONLY", 202, "Ozon Only"),
         ]
         self.stocks = {"SKU-A": 5, "OZON-ONLY": 4}
+        self.fbo_stocks = {"SKU-A": 0, "OZON-ONLY": 0}
         self.postings = [
             OzonPosting(
                 posting_number="12345678-0001-1",
@@ -65,10 +66,7 @@ class FakeOzon:
         return dict(self.stocks)
 
     async def get_stock_breakdown(self):
-        return dict(self.stocks), {
-            "SKU-A": 0,
-            "OZON-ONLY": 0,
-        }
+        return dict(self.stocks), dict(self.fbo_stocks)
 
     async def get_fbs_warehouses(self):
         return [
@@ -91,6 +89,38 @@ class FakeOzon:
 
     async def ship_fbs(self, posting):
         self.shipped.append(posting.posting_number)
+
+
+class FakeInventory:
+    def __init__(self, db, quantities=None):
+        self.db = db
+        self.quantities = dict(quantities or {})
+        self.set_calls = []
+        self.suppress_calls = []
+        self.restore_calls = []
+
+    def local_quantity(self, sku):
+        return int(self.quantities.get(sku, 0))
+
+    def is_suppressed(self, channel, sku):
+        return self.db.is_channel_suppressed(channel, sku)
+
+    async def set_local_stock(self, sku, quantity, reason="test"):
+        self.quantities[str(sku)] = int(quantity)
+        self.set_calls.append((str(sku), int(quantity), reason))
+        return int(quantity)
+
+    async def suppress_channel(self, channel, sku, reason):
+        self.suppress_calls.append((channel, sku, reason))
+        self.db.set_channel_suppressed(channel, sku, reason)
+        self.db.set_channel_stock("ozon_fbs", sku, 0)
+
+    async def restore_channel(self, channel, sku):
+        quantity = self.local_quantity(sku)
+        self.restore_calls.append((channel, sku, quantity))
+        self.db.clear_channel_suppressed(channel, sku)
+        self.db.set_channel_stock("ozon_fbs", sku, quantity)
+        return quantity
 
 
 class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -165,6 +195,103 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(warehouse_id)
         self.assertIsNone(self.ozon.warehouse_id)
+
+    async def test_stocks_ozon_command_shows_fbs_and_fbo(self):
+        self.client.fbo_stocks["SKU-A"] = 8
+
+        handled = await self.ozon.handle_message(
+            123, "/stocks_ozon"
+        )
+
+        self.assertTrue(handled)
+        self.assertGreaterEqual(len(self.tg.sent), 2)
+        text = self.tg.sent[-1][1]
+        self.assertIn("Остатки OZON", text)
+        self.assertIn("FBS", text)
+        self.assertIn("FBO", text)
+        self.assertIn("SKU-A", text)
+
+    async def test_fbo_appearance_offers_zeroing_ozon_fbs(self):
+        inventory = FakeInventory(
+            self.db, {"SKU-A": 5, "OZON-ONLY": 4}
+        )
+        self.ozon.set_shared_inventory(inventory)
+        await self.ozon.refresh_catalog_and_stocks(
+            notify=False
+        )
+        self.client.fbo_stocks["SKU-A"] = 2
+
+        await self.ozon.refresh_catalog_and_stocks()
+
+        alerts = [
+            item
+            for item in self.tg.broadcasts
+            if "Товар появился на складе OZON" in item[1]
+        ]
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("SKU-A", alerts[0][1])
+        keyboard = alerts[0][2]["reply_markup"]
+        self.assertIn(
+            "ozstock:101:zero",
+            str(keyboard),
+        )
+
+    async def test_total_ozon_depletion_offers_add_to_local_stock(self):
+        inventory = FakeInventory(
+            self.db, {"SKU-A": 0, "OZON-ONLY": 4}
+        )
+        self.ozon.set_shared_inventory(inventory)
+        await self.ozon.refresh_catalog_and_stocks(
+            notify=False
+        )
+        self.client.stocks["SKU-A"] = 0
+        self.client.fbo_stocks["SKU-A"] = 0
+
+        await self.ozon.refresh_catalog_and_stocks()
+
+        alerts = [
+            item
+            for item in self.tg.broadcasts
+            if "закончился в OZON FBS и FBO" in item[1]
+        ]
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("ozstock:101:add1", str(alerts[0][2]))
+        self.assertIn("ozstock:101:add5", str(alerts[0][2]))
+
+        await self.ozon.refresh_catalog_and_stocks()
+        alerts_again = [
+            item
+            for item in self.tg.broadcasts
+            if "закончился в OZON FBS и FBO" in item[1]
+        ]
+        self.assertEqual(len(alerts_again), 1)
+
+    async def test_depletion_add_button_sets_shared_local_stock(self):
+        inventory = FakeInventory(
+            self.db, {"SKU-A": 0, "OZON-ONLY": 4}
+        )
+        self.ozon.set_shared_inventory(inventory)
+        await self.ozon.refresh_catalog_and_stocks(
+            notify=False
+        )
+        self.client.stocks["SKU-A"] = 0
+        self.client.fbo_stocks["SKU-A"] = 0
+        await self.ozon.refresh_catalog_and_stocks(
+            notify=False
+        )
+
+        handled = await self.ozon.handle_callback(
+            123,
+            9,
+            "ozstock:101:add5",
+            "alert",
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(
+            inventory.set_calls[-1],
+            ("SKU-A", 5, "telegram_ozon_stock_add"),
+        )
 
     async def test_initialize_saves_catalog_stocks_and_notifies_once(self):
         await self.ozon.initialize()

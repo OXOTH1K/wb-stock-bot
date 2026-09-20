@@ -42,6 +42,10 @@ class FakeOzon:
             "ozon_fbs", sku, int(quantity)
         )
 
+    async def set_fbs_stocks(self, quantities):
+        for sku, quantity in quantities.items():
+            await self.set_fbs_stock(sku, quantity)
+
 
 class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -228,6 +232,86 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(
             self.shared.is_suppressed("wb", "SKU-A")
+        )
+
+    async def test_ozon_mass_zero_and_restore_use_local_stock(self):
+        await self.shared.initialize()
+        self.db.replace_channel_catalog(
+            "ozon",
+            [
+                ("SKU-A", "Alpha OZON", "501"),
+                ("OZON-ONLY", "Ozon Only", "502"),
+            ],
+        )
+        self.db.replace_channel_stock(
+            "ozon_fbs",
+            {"SKU-A": 3, "OZON-ONLY": 4},
+        )
+        self.db.ensure_local_stock("OZON-ONLY", 4)
+
+        count, before = await self.shared.suppress_ozon_mass()
+
+        self.assertEqual(count, 2)
+        self.assertEqual(before, 7)
+        self.assertEqual(
+            self.db.get_channel_stock(
+                "ozon_fbs", ("SKU-A", "OZON-ONLY")
+            ),
+            {"SKU-A": 0, "OZON-ONLY": 0},
+        )
+        self.assertEqual(
+            self.db.get_channel_suppression_reason(
+                "ozon", "SKU-A"
+            ),
+            "mass",
+        )
+
+        self.db.set_local_stock(
+            "SKU-A", 2, reason="test_after_mass_zero"
+        )
+        self.db.set_local_stock(
+            "OZON-ONLY", 1, reason="test_after_mass_zero"
+        )
+
+        restored, total = await self.shared.restore_ozon_mass()
+
+        self.assertEqual(restored, 2)
+        self.assertEqual(total, 3)
+        self.assertEqual(
+            self.db.get_channel_stock(
+                "ozon_fbs", ("SKU-A", "OZON-ONLY")
+            ),
+            {"SKU-A": 2, "OZON-ONLY": 1},
+        )
+        self.assertFalse(
+            self.shared.is_suppressed("ozon", "SKU-A")
+        )
+        self.assertFalse(
+            self.shared.is_suppressed("ozon", "OZON-ONLY")
+        )
+
+    async def test_ozon_mass_restore_keeps_marketplace_suppression(self):
+        await self.shared.initialize()
+        await self.shared.suppress_channel(
+            "ozon", "SKU-A", "marketplace_stock"
+        )
+
+        count, _ = await self.shared.suppress_ozon_mass()
+        restored, _ = await self.shared.restore_ozon_mass()
+
+        self.assertEqual(count, 1)
+        self.assertEqual(restored, 0)
+        self.assertEqual(
+            self.db.get_channel_suppression_reason(
+                "ozon", "SKU-A"
+            ),
+            "marketplace_stock",
+        )
+        self.assertEqual(
+            self.db.get_channel_stock(
+                "ozon_fbs", ("SKU-A",)
+            )["SKU-A"],
+            0,
         )
 
     async def test_ozon_suppression_only_zeros_ozon(self):
