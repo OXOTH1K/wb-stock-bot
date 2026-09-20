@@ -290,44 +290,56 @@ class CRMServer:
 
     async def wb_orders(self, request: web.Request) -> web.Response:
         rows = self.db.list_order_state(limit=300)
-        by_id = {
-            int(row["order_id"]): row
-            for row in rows
-            if row.get("supplier_status") in {"new", "confirm"}
-        }
+        by_id = {int(row["order_id"]): row for row in rows}
 
-        for order in self.orders.current_new_orders.values():
-            by_id.setdefault(
-                order.id,
-                {
-                    "order_id": order.id,
-                    "article": order.article,
-                    "nm_id": order.nm_id,
-                    "status": "new",
-                    "supplier_status": "new",
-                    "wb_status": "waiting",
-                    "supply_id": None,
-                    "first_seen_at": order.created_at,
-                    "updated_at": order.created_at,
+        active_new = set(self.orders.current_new_orders)
+        active_supply = dict(self.orders.current_supply_orders)
+        active_ids = active_new | set(active_supply)
+
+        items = []
+        for order_id in active_ids:
+            row = by_id.get(order_id)
+            live = self.orders.current_new_orders.get(order_id)
+            if row is None:
+                row = {
+                    "order_id": order_id,
+                    "article": live.article if live is not None else "",
+                    "nm_id": live.nm_id if live is not None else 0,
+                    "status": "notified" if live is not None else "assigned",
+                    "supply_id": active_supply.get(order_id),
+                    "first_seen_at": (
+                        live.created_at if live is not None else ""
+                    ),
+                    "updated_at": (
+                        live.created_at if live is not None else ""
+                    ),
                     "assembled": False,
-                },
-            )
+                    "supplier_status": (
+                        "new" if order_id in active_new else "confirm"
+                    ),
+                    "wb_status": "waiting",
+                }
+            else:
+                row = dict(row)
+                if live is not None and not row.get("article"):
+                    row["article"] = live.article
+                row["supplier_status"] = (
+                    "new" if order_id in active_new else "confirm"
+                )
+                row["is_new"] = order_id in active_new
+                if order_id in active_supply:
+                    row["supply_id"] = active_supply[order_id]
+                    row["status"] = "assigned"
+            row["is_new"] = order_id in active_new
+            items.append(row)
 
-        items = list(by_id.values())
         items.sort(
             key=lambda row: (
-                0 if row.get("supplier_status") == "new" else 1,
+                0 if row["is_new"] else 1,
                 str(row.get("first_seen_at") or ""),
+                int(row["order_id"]),
             )
         )
-
-        for row in items:
-            order_id = int(row["order_id"])
-            row["is_new"] = row.get("supplier_status") == "new"
-            live = self.orders.current_new_orders.get(order_id)
-            if live is not None and not row.get("article"):
-                row["article"] = live.article
-
         return web.json_response({"items": items})
 
     async def set_wb_order_assembled(

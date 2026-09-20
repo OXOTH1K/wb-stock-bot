@@ -48,6 +48,7 @@ class OrderMonitor:
         self.warehouse_id = int(warehouse_id)
         self._lock = asyncio.Lock()
         self.current_new_orders: dict[int, FBSOrder] = {}
+        self.current_supply_orders: dict[int, str] = {}
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
@@ -157,8 +158,8 @@ class OrderMonitor:
     ) -> dict[int, tuple[str, str]]:
         statuses: dict[int, tuple[str, str]] = {}
         ids = list(dict.fromkeys(int(x) for x in order_ids))
-        for start in range(0, len(ids), 100):
-            chunk = ids[start : start + 100]
+        for start in range(0, len(ids), 1000):
+            chunk = ids[start : start + 1000]
             data = await self.wb._json(
                 "POST",
                 f"{self.wb.MARKETPLACE_BASE}/api/v3/orders/status",
@@ -229,6 +230,22 @@ class OrderMonitor:
             cursor = nxt
         return result
 
+    async def _supply_memberships(
+        self, supplies: list[FBSSupply]
+    ) -> dict[int, str]:
+        memberships: dict[int, str] = {}
+        for supply in supplies:
+            data = await self.wb._json(
+                "GET",
+                (
+                    f"{self.wb.MARKETPLACE_BASE}/api/marketplace/v3/"
+                    f"supplies/{supply.id}/order-ids"
+                ),
+            )
+            for order_id in (data or {}).get("orderIds", []):
+                memberships[int(order_id)] = supply.id
+        return memberships
+
     def _eligible(self, order: FBSOrder, supplies: list[FBSSupply]) -> list[FBSSupply]:
         out = []
         for supply in supplies:
@@ -269,28 +286,74 @@ class OrderMonitor:
     async def refresh(self) -> None:
         orders = await self._new_orders()
 
+        supplies: list[FBSSupply] = []
+        memberships: dict[int, str] = {}
+        membership_ok = False
+        try:
+            supplies = await self._supplies()
+            memberships = await self._supply_memberships(supplies)
+            membership_ok = True
+        except Exception:
+            log.exception("Could not refresh active supply membership")
+            # Do not erase the last known active membership on a transient API error.
+            memberships = dict(self.current_supply_orders)
+
         try:
             details = await self._sync_crm_order_statuses(orders)
         except Exception:
             log.exception("Could not refresh CRM order statuses")
             details = {}
 
-        verified_new = [
-            order
-            for order in orders
-            if details.get(order.id, ("new", ""))[0] == "new"
-        ]
-        self.current_new_orders = {
-            order.id: order for order in verified_new
-        }
-        unseen = [o for o in verified_new if self._state(o.id) is None]
+        # A real active-supply membership is the strongest signal that an order
+        # is already being assembled, even if /orders/new or /orders/status lags.
+        # If membership refresh fails, keep the previous membership map instead.
+        current_by_id = {order.id: order for order in orders}
+        for order_id, supply_id in list(memberships.items()):
+            state = self._state(order_id)
+            order = current_by_id.get(order_id)
+            if state is None and order is not None:
+                self._remember(order)
+                state = self._state(order_id)
+            if state is not None:
+                self._set_state(order_id, "assigned", supply_id)
+            self.db.set_order_runtime_status(order_id, "confirm", "waiting")
 
+        # Status=confirm is also a valid fallback when the supply-membership call
+        # is incomplete. Reuse the locally known supply_id when available.
+        for order_id, (supplier_status, _) in details.items():
+            if supplier_status != "confirm" or order_id in memberships:
+                continue
+            state = self._state(order_id)
+            if state is not None and state[1]:
+                memberships[order_id] = state[1]
+
+        self.current_supply_orders = memberships
+
+        ready: list[FBSOrder] = []
+        for order in orders:
+            if order.id in memberships:
+                continue
+            supplier_status = details.get(order.id, ("new", ""))[0]
+            if supplier_status == "confirm":
+                state = self._state(order.id)
+                if state is not None and state[1]:
+                    self.current_supply_orders[order.id] = state[1]
+                continue
+            if supplier_status and supplier_status != "new":
+                continue
+            ready.append(order)
+
+        self.current_new_orders = {order.id: order for order in ready}
+        for order in ready:
+            self.db.set_order_runtime_status(order.id, "new", "waiting")
+
+        unseen = [o for o in ready if self._state(o.id) is None]
         if unseen:
-            supplies = None
-            try:
-                supplies = await self._supplies()
-            except Exception:
-                log.exception("Could not load supplies")
+            if not supplies:
+                try:
+                    supplies = await self._supplies()
+                except Exception:
+                    log.exception("Could not load supplies")
             for order in sorted(unseen, key=lambda o: (o.created_at, o.id)):
                 await self.tg.broadcast(
                     self.settings.telegram_chat_ids,
@@ -299,11 +362,17 @@ class OrderMonitor:
                 )
                 self._remember(order)
 
+        if membership_ok:
+            # Orders that were previously "assigned" but are no longer present in
+            # any active supply are intentionally not kept in current_supply_orders.
+            # CRM will therefore hide them unless they reappear as real new orders.
+            pass
+
     async def audit_pending(self, chat_id: int) -> int:
-        """Show currently-new orders that still need a decision in this chat."""
-        orders = await self._new_orders()
+        """Show currently ready-to-assemble orders that still need a decision."""
+        await self.refresh()
         pending = []
-        for order in orders:
+        for order in self.current_new_orders.values():
             state = self._state(order.id)
             if state and state[0] in {"assigned", "skipped"}:
                 continue

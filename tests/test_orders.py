@@ -58,6 +58,10 @@ class FakeWB:
                     }
                 )
             return {"orders": rows}
+        if method == "GET" and "/api/marketplace/v3/supplies/" in url and url.endswith("/order-ids"):
+            supply_id = url.split("/supplies/", 1)[1].split("/", 1)[0]
+            supply = next((s for s in self.supplies if s["id"] == supply_id), None)
+            return {"orderIds": list((supply or {}).get("orderIds", []))}
         if method == "GET" and url.endswith("/api/v3/supplies"):
             return {"next": 0, "supplies": list(self.supplies)}
         if method == "POST" and url.endswith("/api/v3/supplies"):
@@ -163,6 +167,37 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(count, 0)
         self.assertEqual(tg.sent, [])
 
+
+    async def test_supply_membership_overrides_stale_new_and_notified_state(self):
+        supply = {
+            "id": "WB-GI-42",
+            "name": "Сегодня",
+            "done": False,
+            "cargoType": 1,
+            "crossBorderType": 0,
+            "orderIds": [501],
+        }
+        monitor, _, tg = self.monitor(
+            [self.row()],
+            [supply],
+            {501: ("new", "waiting")},
+        )
+        monitor._remember(monitor._parse_order(self.row()))
+
+        await monitor.refresh()
+
+        state = monitor._state(501)
+        self.assertEqual(state, ("assigned", "WB-GI-42"))
+        self.assertNotIn(501, monitor.current_new_orders)
+        self.assertEqual(monitor.current_supply_orders[501], "WB-GI-42")
+        row = next(
+            x for x in self.db.list_order_state()
+            if x["order_id"] == 501
+        )
+        self.assertEqual(row["supplier_status"], "confirm")
+        self.assertEqual(row["status"], "assigned")
+        self.assertEqual(row["supply_id"], "WB-GI-42")
+        self.assertEqual(tg.broadcasts, [])
 
     async def test_orders_new_row_does_not_override_confirm_status(self):
         monitor, _, tg = self.monitor(
