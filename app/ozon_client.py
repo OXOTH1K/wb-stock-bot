@@ -253,14 +253,61 @@ class OzonClient:
         return fbs
 
     async def get_fbs_warehouses(self) -> list[dict]:
-        data = await self._json("/v1/warehouse/list", {})
-        rows = (data or {}).get("result", [])
-        return [
-            row
-            for row in rows
-            if isinstance(row, dict)
-            and int(row.get("warehouse_id") or 0) > 0
-        ]
+        result: list[dict] = []
+        cursor = ""
+        seen: set[str] = set()
+
+        while True:
+            payload: dict[str, object] = {"limit": 100}
+            if cursor:
+                payload["cursor"] = cursor
+
+            data = await self._json(
+                "/v2/warehouse/list", payload
+            )
+            raw_result = (data or {}).get("result")
+            if isinstance(raw_result, list):
+                rows = raw_result
+            elif isinstance(raw_result, dict):
+                rows = raw_result.get("warehouses", [])
+            else:
+                rows = (data or {}).get("warehouses", [])
+            if not isinstance(rows, list):
+                rows = []
+
+            result.extend(
+                row
+                for row in rows
+                if isinstance(row, dict)
+                and int(row.get("warehouse_id") or 0) > 0
+            )
+
+            next_cursor = str(
+                (data or {}).get("cursor")
+                or (
+                    raw_result.get("cursor")
+                    if isinstance(raw_result, dict)
+                    else ""
+                )
+                or ""
+            )
+            has_next = (data or {}).get("has_next")
+            if isinstance(raw_result, dict):
+                has_next = raw_result.get(
+                    "has_next", has_next
+                )
+            if (
+                not rows
+                or not next_cursor
+                or next_cursor == cursor
+                or next_cursor in seen
+                or has_next is False
+            ):
+                break
+            seen.add(next_cursor)
+            cursor = next_cursor
+
+        return result
 
     async def set_fbs_stocks(
         self,
