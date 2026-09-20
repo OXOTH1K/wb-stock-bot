@@ -11,6 +11,7 @@ from aiohttp import web
 from .config import Settings
 from .crm_ui import INDEX_HTML
 from .db import StateDB
+from .inventory_sync import SharedStockSync
 from .service import StockMonitorService
 
 log = logging.getLogger(__name__)
@@ -22,10 +23,12 @@ class CRMServer:
         settings: Settings,
         service: StockMonitorService,
         db: StateDB,
+        stock_sync: SharedStockSync | None = None,
     ):
         self.settings = settings
         self.service = service
         self.db = db
+        self.stock_sync = stock_sync
         try:
             self._allowed_networks = tuple(
                 ipaddress.ip_network(value, strict=False)
@@ -169,7 +172,9 @@ class CRMServer:
 
             wb_fbs: int | None = None
             wb_warehouses: int | None = None
-            fbs_suppressed = False
+            fbs_suppressed = self.db.is_channel_suppressed(
+                "wb", sku
+            )
             if wb_product is not None:
                 wb_fbs = int(
                     self.service.fbs_stock.get(wb_product.nm_id, 0)
@@ -177,11 +182,10 @@ class CRMServer:
                 wb_warehouses = int(
                     self.service.wb_stock.get(wb_product.nm_id, 0)
                 )
-                saved = self.db.get_saved_product_fbs(
-                    "wb_auto", wb_product.nm_id
-                )
-                fbs_suppressed = bool(saved) and wb_fbs == 0
 
+            ozon_suppressed = self.db.is_channel_suppressed(
+                "ozon", sku
+            )
             ozon_fbs: int | None = None
             if ozon_product is not None:
                 ozon_fbs = int(ozon_stock.get(sku, 0))
@@ -193,7 +197,11 @@ class CRMServer:
                 and wb_fbs != local_qty
             ):
                 drift_channels.append("WB")
-            if ozon_fbs is not None and ozon_fbs != local_qty:
+            if (
+                ozon_fbs is not None
+                and not ozon_suppressed
+                and ozon_fbs != local_qty
+            ):
                 drift_channels.append("OZON")
 
             title = ""
@@ -219,6 +227,7 @@ class CRMServer:
                     "wb_exists": wb_product is not None,
                     "ozon_exists": ozon_product is not None,
                     "fbs_suppressed": fbs_suppressed,
+                    "ozon_suppressed": ozon_suppressed,
                     "drift_channels": drift_channels,
                 }
             )
@@ -287,9 +296,20 @@ class CRMServer:
                 content_type="application/json",
             )
         try:
-            quantity = self.db.adjust_local_stock(
-                sku, delta, reason="crm_adjust"
-            )
+            if self.stock_sync is not None:
+                current = self.stock_sync.ensure_local(sku)
+                quantity = current + delta
+                if quantity < 0:
+                    raise ValueError(
+                        "Local stock cannot be negative"
+                    )
+                quantity = await self.stock_sync.set_local_stock(
+                    sku, quantity, reason="crm_adjust"
+                )
+            else:
+                quantity = self.db.adjust_local_stock(
+                    sku, delta, reason="crm_adjust"
+                )
         except ValueError as exc:
             raise web.HTTPBadRequest(
                 text=web.json_response({"error": str(exc)}).text,
@@ -313,9 +333,14 @@ class CRMServer:
                 content_type="application/json",
             )
         try:
-            quantity = self.db.set_local_stock(
-                sku, quantity, reason="crm_set"
-            )
+            if self.stock_sync is not None:
+                quantity = await self.stock_sync.set_local_stock(
+                    sku, quantity, reason="crm_set"
+                )
+            else:
+                quantity = self.db.set_local_stock(
+                    sku, quantity, reason="crm_set"
+                )
         except ValueError as exc:
             raise web.HTTPBadRequest(
                 text=web.json_response({"error": str(exc)}).text,
