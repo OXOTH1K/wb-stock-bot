@@ -60,6 +60,48 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(by_sku["SKU-B"]["fbs_suppressed"])
         self.assertIsNone(by_sku["SKU-A"]["ozon_fbs"])
 
+    async def test_inventory_unions_wb_and_ozon_by_seller_sku(self):
+        self.db.replace_channel_catalog(
+            "ozon",
+            [
+                ("SKU-A", "Alpha Ozon", "1001"),
+                ("OZON-ONLY", "Ozon Only", "1002"),
+            ],
+        )
+        self.db.replace_channel_stock(
+            "ozon_fbs",
+            {"SKU-A": 5, "OZON-ONLY": 4},
+        )
+
+        response = await self.client.get("/api/inventory")
+        self.assertEqual(response.status, 200)
+        data = await response.json()
+        by_sku = {row["sku"]: row for row in data["items"]}
+
+        shared = by_sku["SKU-A"]
+        self.assertTrue(shared["wb_exists"])
+        self.assertTrue(shared["ozon_exists"])
+        self.assertEqual(shared["wb_fbs"], 5)
+        self.assertEqual(shared["ozon_fbs"], 5)
+        self.assertEqual(shared["local"], 5)
+        self.assertEqual(shared["drift_channels"], [])
+
+        wb_only = by_sku["SKU-B"]
+        self.assertTrue(wb_only["wb_exists"])
+        self.assertFalse(wb_only["ozon_exists"])
+        self.assertIsNone(wb_only["ozon_fbs"])
+
+        ozon_only = by_sku["OZON-ONLY"]
+        self.assertFalse(ozon_only["wb_exists"])
+        self.assertTrue(ozon_only["ozon_exists"])
+        self.assertIsNone(ozon_only["wb_fbs"])
+        self.assertIsNone(ozon_only["wb_warehouses"])
+        self.assertEqual(ozon_only["ozon_fbs"], 4)
+        self.assertEqual(ozon_only["local"], 4)
+        self.assertEqual(ozon_only["title"], "Ozon Only")
+
+        self.assertEqual(data["totals"]["ozon_fbs"], 9)
+
     async def test_inventory_can_be_adjusted_and_is_audited(self):
         await self.client.get("/api/inventory")
 
