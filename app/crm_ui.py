@@ -23,7 +23,7 @@ INDEX_HTML = r"""<!doctype html>
     .panel-head h2{font-size:16px;margin:0}.actions{display:flex;gap:8px;align-items:center}
     .btn{border:1px solid var(--line);background:#fff;padding:7px 10px;border-radius:8px}
     .btn:hover{background:#f9fafb}.btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-    .cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
+    .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
     .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
     .card .n{font-size:24px;font-weight:700}.card .l{color:var(--muted);margin-top:3px}
     .table-wrap{overflow:visible}
@@ -85,8 +85,9 @@ async function loadInventory() {
     document.getElementById('inventoryCards').innerHTML = [
       ['Локальный склад', totals.local],
       ['WB FBS', totals.wb_fbs],
+      ['OZON FBS', totals.ozon_fbs],
       ['На складах WB', totals.wb_warehouses],
-      ['Расхождений с FBS', totals.drift]
+      ['Расхождений', totals.drift]
     ].map(x => '<div class="card"><div class="n">'+esc(x[1])+'</div><div class="l">'+esc(x[0])+'</div></div>').join('');
     renderInventory();
   } catch (e) { setError('inventoryBody', e); }
@@ -97,17 +98,21 @@ function renderInventory() {
   if (!rows.length) { document.getElementById('inventoryBody').innerHTML='<div class="empty">Ничего не найдено</div>'; return; }
   let html = '<div class="table-wrap"><table><thead><tr><th>Товар</th><th>Локальный склад</th><th>WB FBS</th><th>Склады WB</th><th>OZON FBS</th><th>Состояние</th></tr></thead><tbody>';
   for (const x of rows) {
-    const drift = x.local !== x.wb_fbs;
-    const state = x.fbs_suppressed
-      ? '<span class="badge warn">FBS намеренно 0</span>'
-      : drift ? '<span class="badge bad">расхождение</span>' : '<span class="badge ok">синхронно</span>';
+    const badges = [];
+    if (x.fbs_suppressed) badges.push('<span class="badge warn">WB FBS намеренно 0</span>');
+    for (const channel of (x.drift_channels || [])) {
+      badges.push('<span class="badge bad">'+esc(channel)+' ≠ локал</span>');
+    }
+    if (!badges.length) badges.push('<span class="badge ok">синхронно</span>');
+    const state = badges.join(' ');
     const encodedSku = encodeURIComponent(x.sku);
     html += '<tr><td><div class="title">'+esc(x.title||'Без названия')+'</div><div class="sku">'+esc(x.sku)+'</div></td>'+
       '<td><div class="stock-edit">'+
       '<input id="qty-'+x.key+'" type="number" min="0" value="'+esc(x.local)+'">'+
-      '<button class="mini" title="Сохранить" onclick="setStock(decodeURIComponent(\''+encodedSku+'\'),'+Number(x.key)+')">✓</button></div></td>'+
-      '<td class="qty">'+esc(x.wb_fbs)+'</td><td class="qty">'+esc(x.wb_warehouses)+'</td>'+
-      '<td>'+(x.ozon_fbs === null ? '<span class="muted">не подключено</span>' : '<span class="qty">'+esc(x.ozon_fbs)+'</span>')+'</td>'+
+      '<button class="mini" title="Сохранить" onclick="setStock(decodeURIComponent(\''+encodedSku+'\'),\''+x.key+'\')">✓</button></div></td>'+
+      '<td>'+(x.wb_fbs === null ? '<span class="muted">—</span>' : '<span class="qty">'+esc(x.wb_fbs)+'</span>')+'</td>'+
+      '<td>'+(x.wb_warehouses === null ? '<span class="muted">—</span>' : '<span class="qty">'+esc(x.wb_warehouses)+'</span>')+'</td>'+
+      '<td>'+(x.ozon_fbs === null ? '<span class="muted">—</span>' : '<span class="qty">'+esc(x.ozon_fbs)+'</span>')+'</td>'+
       '<td>'+state+'</td></tr>';
   }
   html += '</tbody></table></div>';
