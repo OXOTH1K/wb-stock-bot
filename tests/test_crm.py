@@ -53,6 +53,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
             crm_port=8080,
             crm_user="",
             crm_password="",
+            crm_allowed_networks=("127.0.0.1/32",),
         )
         self.crm = CRMServer(
             self.settings, self.service, self.orders, self.db
@@ -153,6 +154,16 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(data["connected"])
         self.assertEqual(data["items"], [])
 
+    async def test_network_allowlist_accepts_lan_and_rejects_other_networks(self):
+        self.crm._allowed_networks = (
+            __import__("ipaddress").ip_network("127.0.0.1/32"),
+            __import__("ipaddress").ip_network("192.168.1.0/24"),
+        )
+        self.assertTrue(self.crm._client_ip_allowed("192.168.1.25"))
+        self.assertTrue(self.crm._client_ip_allowed("127.0.0.1"))
+        self.assertFalse(self.crm._client_ip_allowed("192.168.2.25"))
+        self.assertFalse(self.crm._client_ip_allowed("10.0.0.5"))
+
 
 class CRMAuthTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -164,6 +175,7 @@ class CRMAuthTests(unittest.IsolatedAsyncioTestCase):
             crm_port=8080,
             crm_user="admin",
             crm_password="secret",
+            crm_allowed_networks=("127.0.0.1/32",),
         )
         self.crm = CRMServer(
             self.settings, FakeService(), FakeOrders(), self.db

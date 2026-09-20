@@ -24,6 +24,7 @@ class Settings:
     crm_port: int
     crm_user: str
     crm_password: str
+    crm_allowed_networks: tuple[str, ...]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -51,15 +52,22 @@ class Settings:
         crm_port = int(os.getenv("CRM_PORT", "8080"))
         crm_user = os.getenv("CRM_USER", "").strip()
         crm_password = os.getenv("CRM_PASSWORD", "").strip()
+        raw_allowed_networks = os.getenv("CRM_ALLOWED_NETWORKS", "").strip()
+        crm_allowed_networks = tuple(
+            item.strip()
+            for item in raw_allowed_networks.split(",")
+            if item.strip()
+        )
         if bool(crm_user) != bool(crm_password):
             raise RuntimeError("CRM_USER and CRM_PASSWORD must be set together")
         if (
             crm_enabled
             and crm_host not in {"127.0.0.1", "localhost", "::1"}
+            and not crm_allowed_networks
             and not (crm_user and crm_password)
         ):
             raise RuntimeError(
-                "CRM_USER and CRM_PASSWORD are required when CRM_HOST is not localhost"
+                "Non-local CRM_HOST requires CRM_ALLOWED_NETWORKS or CRM_USER/CRM_PASSWORD"
             )
 
         return cls(
@@ -78,4 +86,5 @@ class Settings:
             crm_port=crm_port,
             crm_user=crm_user,
             crm_password=crm_password,
+            crm_allowed_networks=crm_allowed_networks,
         )
