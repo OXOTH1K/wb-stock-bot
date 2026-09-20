@@ -97,10 +97,9 @@ class SharedInventoryService:
             if product is None:
                 continue
             sku = self._wb_sku(product)
-            if (
-                self.wb_service.fbs_stock.get(product.nm_id, 0) == 0
-                and self.wb_service.wb_stock.get(product.nm_id, 0) > 0
-            ):
+            if self.wb_service.fbs_stock.get(
+                product.nm_id, 0
+            ) == 0:
                 self.db.set_channel_suppressed(
                     "wb", sku, "marketplace_stock"
                 )
