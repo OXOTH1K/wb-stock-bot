@@ -37,15 +37,28 @@ class FBSSupply:
 
 
 RecoveryHandler = Callable[[datetime, datetime], Awaitable[None]]
+SaleHandler = Callable[
+    [str, str, list[tuple[str, int]]],
+    Awaitable[object],
+]
 
 
 class OrderMonitor:
-    def __init__(self, settings: Settings, wb: WildberriesClient, tg: TelegramBot, db: StateDB, warehouse_id: int):
+    def __init__(
+        self,
+        settings: Settings,
+        wb: WildberriesClient,
+        tg: TelegramBot,
+        db: StateDB,
+        warehouse_id: int,
+        sale_handler: SaleHandler | None = None,
+    ):
         self.settings = settings
         self.wb = wb
         self.tg = tg
         self.db = db
         self.warehouse_id = int(warehouse_id)
+        self.sale_handler = sale_handler
         self._lock = asyncio.Lock()
         self.current_new_orders: dict[int, FBSOrder] = {}
         self.current_supply_orders: dict[int, str] = {}
@@ -108,6 +121,21 @@ class OrderMonitor:
             cross_border_type=int(row.get("crossBorderType") or 0),
             offices=tuple(str(x) for x in (row.get("offices") or [])),
         )
+
+    async def _apply_sale(self, order: FBSOrder) -> None:
+        if self.sale_handler is None:
+            return
+        try:
+            await self.sale_handler(
+                "wb",
+                str(order.id),
+                [(order.article, 1)],
+            )
+        except Exception:
+            log.exception(
+                "Could not apply shared inventory sale for WB order %s",
+                order.id,
+            )
 
     async def _new_orders(self) -> list[FBSOrder]:
         data = await self.wb._json(
@@ -277,7 +305,11 @@ class OrderMonitor:
         return {"inline_keyboard": rows}
 
     def _text(self, order: FBSOrder, supplies: list[FBSSupply] | None) -> str:
-        lines = ["🛒 Новый FBS-заказ", f"Артикул: {order.article or '—'}", f"Заказ: {order.id}"]
+        lines = [
+            "🟣 Новый FBS-заказ WB",
+            f"Артикул: {order.article or '—'}",
+            f"Заказ: {order.id}",
+        ]
         if order.offices:
             lines.append(f"Направление WB: {', '.join(order.offices)}")
         if supplies is None:
@@ -375,6 +407,7 @@ class OrderMonitor:
                 except Exception:
                     log.exception("Could not load supplies")
             for order in sorted(unseen, key=lambda o: (o.created_at, o.id)):
+                await self._apply_sale(order)
                 await self.tg.broadcast(
                     self.settings.telegram_chat_ids,
                     self._text(order, supplies),
@@ -439,6 +472,7 @@ class OrderMonitor:
 
         recovered_new = 0
         for order in sorted(new_orders, key=lambda o: (o.created_at, o.id)):
+            await self._apply_sale(order)
             await self.tg.broadcast(
                 self.settings.telegram_chat_ids,
                 "🧭 Заказ найден при сверке после восстановления связи\n\n"
@@ -454,7 +488,13 @@ class OrderMonitor:
             status = statuses.get(order_id, "")
             if status == "new":
                 continue
-            self._set_state(order_id, f"recovered:{status or 'unknown'}", str(row.get("supplyId") or "") or None)
+            if status not in {"cancel", "cancel_carrier", ""}:
+                await self._apply_sale(self._parse_order(row))
+            self._set_state(
+                order_id,
+                f"recovered:{status or 'unknown'}",
+                str(row.get("supplyId") or "") or None,
+            )
             processed.append((row, status or "unknown"))
 
         if processed:
