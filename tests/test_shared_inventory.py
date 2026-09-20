@@ -64,6 +64,26 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
         self.db.close()
         self.tmp.cleanup()
 
+    async def test_legacy_wb_auto_zero_migrates_after_warehouse_stock_ended(self):
+        self.wb.fbs_stock[100] = 0
+        self.wb.wb_stock[100] = 0
+        self.db.save_product_fbs("wb_auto", 100, {11: 3})
+
+        await self.shared.initialize()
+
+        self.assertEqual(
+            self.shared.local_quantity("SKU-A"), 3
+        )
+        self.assertTrue(
+            self.shared.is_suppressed("wb", "SKU-A")
+        )
+        self.assertEqual(
+            self.db.get_channel_suppression_reason(
+                "wb", "SKU-A"
+            ),
+            "marketplace_stock",
+        )
+
     async def test_wb_sale_decrements_local_and_updates_ozon(self):
         await self.shared.initialize()
         orders = [
