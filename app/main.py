@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from contextlib import AsyncExitStack
 
 from .config import Settings
 from .crm import CRMServer
 from .db import StateDB
 from .orders import OrderMonitor
+from .ozon import OzonIntegration
+from .ozon_client import OzonClient
 from .service import StockMonitorService
 from .telegram import TelegramBot
 from .wb_client import WildberriesClient
@@ -22,69 +25,184 @@ async def amain() -> None:
     db = StateDB(settings.db_path)
 
     try:
-        async with WildberriesClient(
-            settings.wb_token, settings.http_timeout
-        ) as wb, TelegramBot(
-            settings.telegram_bot_token
-        ) as tg:
+        async with AsyncExitStack() as stack:
+            wb = await stack.enter_async_context(
+                WildberriesClient(
+                    settings.wb_token,
+                    settings.http_timeout,
+                )
+            )
+            tg = await stack.enter_async_context(
+                TelegramBot(settings.telegram_bot_token)
+            )
+
             service = StockMonitorService(settings, wb, tg, db)
             await service.initialize()
             if service.warehouse is None:
                 raise RuntimeError("Seller warehouse is not initialized")
 
-            orders = OrderMonitor(settings, wb, tg, db, service.warehouse.id)
+            orders = OrderMonitor(
+                settings, wb, tg, db, service.warehouse.id
+            )
             await orders.poll_once(service.reconcile_after_gap)
+
+            ozon: OzonIntegration | None = None
+            if settings.ozon_client_id and settings.ozon_api_key:
+                ozon_client = await stack.enter_async_context(
+                    OzonClient(
+                        settings.ozon_client_id,
+                        settings.ozon_api_key,
+                        settings.http_timeout,
+                    )
+                )
+                ozon = OzonIntegration(
+                    settings, ozon_client, tg, db
+                )
+                await ozon.initialize()
+                logging.getLogger(__name__).info(
+                    "Ozon integration enabled"
+                )
+            else:
+                logging.getLogger(__name__).info(
+                    "Ozon integration disabled: credentials are not configured"
+                )
 
             crm = CRMServer(settings, service, db)
             await crm.start()
 
-            async def message_handler(chat_id: int, text: str) -> None:
-                command = (text.split(maxsplit=1)[0] if text.strip() else "").split("@", 1)[0].lower()
-                if command == "/status" and chat_id in settings.telegram_chat_ids:
-                    await tg.send_message(chat_id, "🔎 Проверяю заказы и остатки…")
+            async def message_handler(
+                chat_id: int, text: str
+            ) -> None:
+                command = (
+                    text.split(maxsplit=1)[0] if text.strip() else ""
+                ).split("@", 1)[0].lower()
+                if (
+                    command == "/status"
+                    and chat_id in settings.telegram_chat_ids
+                ):
+                    await tg.send_message(
+                        chat_id,
+                        "🔎 Проверяю заказы и остатки…",
+                    )
                     try:
-                        order_count = await orders.audit_pending(chat_id)
-                        stock_count, wb_note = await service.audit_actionable_stocks(chat_id)
+                        wb_order_count = await orders.audit_pending(
+                            chat_id
+                        )
+                        ozon_order_count = (
+                            await ozon.audit_pending(chat_id)
+                            if ozon is not None
+                            else 0
+                        )
+                        stock_count, wb_note = (
+                            await service.audit_actionable_stocks(
+                                chat_id
+                            )
+                        )
                         summary = (
                             service._format_status()
                             + "\n\n"
-                            + f"Необработанных новых заказов: {order_count}\n"
-                            + f"Ситуаций по остаткам, требующих решения: {stock_count}"
+                            + (
+                                "Необработанных новых WB-заказов: "
+                                f"{wb_order_count}\n"
+                            )
+                        )
+                        if ozon is not None:
+                            summary += (
+                                "Необработанных новых OZON-заказов: "
+                                f"{ozon_order_count}\n"
+                            )
+                        summary += (
+                            "Ситуаций по остаткам, требующих решения: "
+                            f"{stock_count}"
                         )
                         if wb_note:
                             summary += "\n" + wb_note
                         await tg.send_message(chat_id, summary)
                     except Exception as exc:
-                        logging.getLogger(__name__).exception("Status audit failed")
-                        await tg.send_message(chat_id, f"⚠️ Не удалось выполнить полную сверку: {exc}")
+                        logging.getLogger(__name__).exception(
+                            "Status audit failed"
+                        )
+                        await tg.send_message(
+                            chat_id,
+                            "⚠️ Не удалось выполнить полную сверку: "
+                            f"{exc}",
+                        )
                     return
                 await service.handle_message(chat_id, text)
 
             async def callback_handler(
-                chat_id: int, message_id: int, data: str, message_text: str = ""
+                chat_id: int,
+                message_id: int,
+                data: str,
+                message_text: str = "",
             ) -> None:
-                if await orders.handle_callback(chat_id, message_id, data, message_text):
+                if (
+                    ozon is not None
+                    and await ozon.handle_callback(
+                        chat_id,
+                        message_id,
+                        data,
+                        message_text,
+                    )
+                ):
                     return
-                await service.handle_callback(chat_id, message_id, data, message_text)
+                if await orders.handle_callback(
+                    chat_id,
+                    message_id,
+                    data,
+                    message_text,
+                ):
+                    return
+                await service.handle_callback(
+                    chat_id,
+                    message_id,
+                    data,
+                    message_text,
+                )
 
             tasks = [
                 asyncio.create_task(
-                    tg.polling_loop(message_handler, callback_handler),
+                    tg.polling_loop(
+                        message_handler, callback_handler
+                    ),
                     name="telegram",
                 ),
-                asyncio.create_task(service.fbs_loop(), name="fbs-monitor"),
-                asyncio.create_task(service.wb_loop(), name="wb-monitor"),
-                asyncio.create_task(service.catalog_loop(), name="catalog-refresh"),
                 asyncio.create_task(
-                    orders.loop(service.reconcile_after_gap), name="fbs-orders"
+                    service.fbs_loop(), name="fbs-monitor"
+                ),
+                asyncio.create_task(
+                    service.wb_loop(), name="wb-monitor"
+                ),
+                asyncio.create_task(
+                    service.catalog_loop(),
+                    name="catalog-refresh",
+                ),
+                asyncio.create_task(
+                    orders.loop(service.reconcile_after_gap),
+                    name="fbs-orders",
                 ),
             ]
+            if ozon is not None:
+                tasks.extend(
+                    [
+                        asyncio.create_task(
+                            ozon.order_loop(),
+                            name="ozon-orders",
+                        ),
+                        asyncio.create_task(
+                            ozon.stock_loop(),
+                            name="ozon-stocks",
+                        ),
+                    ]
+                )
 
             stop_event = asyncio.Event()
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
                 try:
-                    loop.add_signal_handler(sig, stop_event.set)
+                    loop.add_signal_handler(
+                        sig, stop_event.set
+                    )
                 except NotImplementedError:
                     pass
 
@@ -93,7 +211,9 @@ async def amain() -> None:
             finally:
                 for task in tasks:
                     task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.gather(
+                    *tasks, return_exceptions=True
+                )
                 await crm.stop()
     finally:
         db.close()
