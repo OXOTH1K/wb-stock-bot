@@ -22,10 +22,12 @@ class CRMServer:
         settings: Settings,
         service: StockMonitorService,
         db: StateDB,
+        inventory: Any | None = None,
     ):
         self.settings = settings
         self.service = service
         self.db = db
+        self.inventory_sync = inventory
         try:
             self._allowed_networks = tuple(
                 ipaddress.ip_network(value, strict=False)
@@ -177,12 +179,14 @@ class CRMServer:
                 wb_warehouses = int(
                     self.service.wb_stock.get(wb_product.nm_id, 0)
                 )
-                saved = self.db.get_saved_product_fbs(
-                    "wb_auto", wb_product.nm_id
+                fbs_suppressed = self.db.is_channel_suppressed(
+                    "wb", sku
                 )
-                fbs_suppressed = bool(saved) and wb_fbs == 0
 
             ozon_fbs: int | None = None
+            ozon_suppressed = self.db.is_channel_suppressed(
+                "ozon", sku
+            )
             if ozon_product is not None:
                 ozon_fbs = int(ozon_stock.get(sku, 0))
 
@@ -193,7 +197,11 @@ class CRMServer:
                 and wb_fbs != local_qty
             ):
                 drift_channels.append("WB")
-            if ozon_fbs is not None and ozon_fbs != local_qty:
+            if (
+                ozon_fbs is not None
+                and not ozon_suppressed
+                and ozon_fbs != local_qty
+            ):
                 drift_channels.append("OZON")
 
             title = ""
@@ -219,6 +227,7 @@ class CRMServer:
                     "wb_exists": wb_product is not None,
                     "ozon_exists": ozon_product is not None,
                     "fbs_suppressed": fbs_suppressed,
+                    "ozon_suppressed": ozon_suppressed,
                     "drift_channels": drift_channels,
                 }
             )
@@ -313,9 +322,14 @@ class CRMServer:
                 content_type="application/json",
             )
         try:
-            quantity = self.db.set_local_stock(
-                sku, quantity, reason="crm_set"
-            )
+            if self.inventory_sync is not None:
+                quantity = await self.inventory_sync.set_local_quantity(
+                    sku, quantity, reason="crm_set"
+                )
+            else:
+                quantity = self.db.set_local_stock(
+                    sku, quantity, reason="crm_set"
+                )
         except ValueError as exc:
             raise web.HTTPBadRequest(
                 text=web.json_response({"error": str(exc)}).text,
