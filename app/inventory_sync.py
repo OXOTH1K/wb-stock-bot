@@ -73,7 +73,14 @@ class SharedInventory:
         for sku in all_skus:
             product = wb_by_sku.get(sku)
             if product is not None:
+                saved = self.db.get_saved_product_fbs(
+                    "wb_auto", product.nm_id
+                )
                 quantity = self._bootstrap_wb_quantity(product)
+                if saved:
+                    self.db.set_channel_suppressed(
+                        "wb", sku, True
+                    )
             else:
                 quantity = int(ozon_stock.get(sku, 0))
             self.db.ensure_local_stock(sku, quantity)
@@ -307,14 +314,19 @@ class SharedInventory:
             return
         if self.wb_service.warehouse is None:
             raise RuntimeError("WB seller warehouse is not initialized")
-        if len(product.chrt_ids) != 1:
+        if len(product.chrt_ids) != 1 and int(quantity) != 0:
             raise RuntimeError(
-                f"WB stock sync requires one chrtId for {sku}; "
+                f"WB stock sync requires one chrtId for positive stock on {sku}; "
                 f"found {len(product.chrt_ids)}"
             )
+        quantities = (
+            {chrt_id: 0 for chrt_id in product.chrt_ids}
+            if int(quantity) == 0
+            else {product.chrt_ids[0]: int(quantity)}
+        )
         await self.wb_service.wb.set_fbs_stocks(
             self.wb_service.warehouse.id,
-            {product.chrt_ids[0]: int(quantity)},
+            quantities,
         )
         self.wb_service.fbs_stock[product.nm_id] = int(quantity)
         self.db.update_many(
