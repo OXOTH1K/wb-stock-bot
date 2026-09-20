@@ -157,8 +157,8 @@ class OrderMonitor:
     ) -> dict[int, tuple[str, str]]:
         statuses: dict[int, tuple[str, str]] = {}
         ids = list(dict.fromkeys(int(x) for x in order_ids))
-        for start in range(0, len(ids), 1000):
-            chunk = ids[start : start + 1000]
+        for start in range(0, len(ids), 100):
+            chunk = ids[start : start + 100]
             data = await self.wb._json(
                 "POST",
                 f"{self.wb.MARKETPLACE_BASE}/api/v3/orders/status",
