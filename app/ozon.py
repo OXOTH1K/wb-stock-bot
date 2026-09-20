@@ -945,9 +945,76 @@ class OzonIntegration:
         if not (
             data.startswith("ozonord:")
             or data.startswith("ozstock:")
+            or data.startswith("ozstocks:")
+            or data.startswith("ozfbsallzero:")
+            or data.startswith("ozfbsallrestore:")
         ):
             return False
         if chat_id not in self.settings.telegram_chat_ids:
+            return True
+
+        if data.startswith("ozstocks:"):
+            if data == "ozstocks:noop":
+                return True
+            try:
+                page = int(data.split(":", 1)[1])
+            except (TypeError, ValueError):
+                return True
+            _, page, _, _ = self._stock_page_meta(page)
+            try:
+                await self.tg.edit_message_text(
+                    chat_id,
+                    message_id,
+                    self._format_stocks_page(page),
+                    parse_mode="HTML",
+                    reply_markup=self._stocks_keyboard(page),
+                )
+            except Exception as exc:
+                log.warning(
+                    "Could not edit OZON stocks page: %s", exc
+                )
+            return True
+
+        if data.startswith("ozfbsallzero:"):
+            try:
+                if data.endswith(":skip"):
+                    await self._finish(
+                        chat_id,
+                        message_id,
+                        original,
+                        "⏭ Массовое обнуление OZON FBS отменено.",
+                    )
+                elif data.endswith(":yes"):
+                    await self._zero_all_fbs(
+                        chat_id, message_id, original
+                    )
+            except Exception as exc:
+                log.exception("OZON mass FBS zero failed")
+                await self.tg.send_message(
+                    chat_id,
+                    f"⚠️ Не удалось обнулить OZON FBS: {exc}",
+                )
+            return True
+
+        if data.startswith("ozfbsallrestore:"):
+            try:
+                if data.endswith(":skip"):
+                    await self._finish(
+                        chat_id,
+                        message_id,
+                        original,
+                        "⏭ Восстановление OZON FBS отменено.",
+                    )
+                elif data.endswith(":yes"):
+                    await self._restore_all_fbs(
+                        chat_id, message_id, original
+                    )
+            except Exception as exc:
+                log.exception("OZON mass FBS restore failed")
+                await self.tg.send_message(
+                    chat_id,
+                    f"⚠️ Не удалось восстановить OZON FBS: {exc}",
+                )
             return True
 
         if data.startswith("ozstock:"):
@@ -964,25 +1031,74 @@ class OzonIntegration:
                         "⚠️ Товар OZON больше не найден в каталоге.",
                     )
                     return True
-                if action in {"skipzero", "skiprestore"}:
+
+                await self.refresh_catalog_and_stocks(
+                    notify=False
+                )
+                fbs_qty = int(
+                    self.db.get_channel_stock(
+                        "ozon_fbs", (sku,)
+                    ).get(sku, 0)
+                )
+                fbo_qty = int(
+                    self.db.get_channel_stock(
+                        "ozon_fbo", (sku,)
+                    ).get(sku, 0)
+                )
+
+                if action == "skipzero":
+                    self._save_stock_decision(
+                        sku, "zero", fbs_qty, fbo_qty, "skip"
+                    )
                     await self._finish(
                         chat_id,
                         message_id,
                         original,
-                        "⏭ Остаток OZON FBS оставлен без изменений.",
+                        "⏭ OZON FBS оставлен без изменений.",
+                    )
+                    return True
+                if action == "skiprestore":
+                    self._save_stock_decision(
+                        sku,
+                        "restore",
+                        fbs_qty,
+                        fbo_qty,
+                        "skip",
+                    )
+                    await self._finish(
+                        chat_id,
+                        message_id,
+                        original,
+                        "⏭ OZON FBS не восстанавливать.",
+                    )
+                    return True
+                if action == "skipadd":
+                    self._save_stock_decision(
+                        sku, "add", fbs_qty, fbo_qty, "skip"
+                    )
+                    await self._finish(
+                        chat_id,
+                        message_id,
+                        original,
+                        "⏭ Остаток на основной склад не добавлять.",
                     )
                     return True
 
-                current_fbo = self.db.get_channel_stock(
-                    "ozon_fbo", (sku,)
-                ).get(sku, 0)
                 if action == "zero":
-                    if int(current_fbo) <= 0:
+                    if fbo_qty <= 0:
                         await self._finish(
                             chat_id,
                             message_id,
                             original,
                             "ℹ️ Обнуление отменено: на складе OZON уже 0.",
+                        )
+                        return True
+                    if fbs_qty <= 0:
+                        await self._finish(
+                            chat_id,
+                            message_id,
+                            original,
+                            "ℹ️ OZON FBS уже равен 0.",
                         )
                         return True
                     await self.inventory.suppress_channel(
@@ -998,13 +1114,27 @@ class OzonIntegration:
                         ),
                     )
                     return True
+
                 if action == "restore":
-                    if int(current_fbo) > 0:
+                    if fbo_qty > 0:
                         await self._finish(
                             chat_id,
                             message_id,
                             original,
                             "ℹ️ Восстановление отменено: товар снова есть на складе OZON.",
+                        )
+                        return True
+                    reason = (
+                        self.db.get_channel_suppression_reason(
+                            "ozon", sku
+                        )
+                    )
+                    if reason != "marketplace_stock":
+                        await self._finish(
+                            chat_id,
+                            message_id,
+                            original,
+                            "ℹ️ OZON FBS не находится в режиме автоматического обнуления из-за FBO.",
                         )
                         return True
                     quantity = await self.inventory.restore_channel(
@@ -1015,6 +1145,47 @@ class OzonIntegration:
                         message_id,
                         original,
                         f"✅ На OZON FBS возвращён актуальный остаток: {quantity} шт.",
+                    )
+                    return True
+
+                if action in {"add1", "add5"}:
+                    if fbs_qty > 0 or fbo_qty > 0:
+                        await self._finish(
+                            chat_id,
+                            message_id,
+                            original,
+                            (
+                                "ℹ️ Действие отменено: остаток OZON "
+                                "уже изменился."
+                            ),
+                        )
+                        return True
+                    local = self.inventory.local_quantity(sku)
+                    if local > 0:
+                        await self._finish(
+                            chat_id,
+                            message_id,
+                            original,
+                            (
+                                "ℹ️ Действие отменено: основной склад "
+                                f"уже равен {local} шт."
+                            ),
+                        )
+                        return True
+                    quantity = 1 if action == "add1" else 5
+                    await self.inventory.set_local_stock(
+                        sku,
+                        quantity,
+                        reason="telegram_ozon_stock_add",
+                    )
+                    await self._finish(
+                        chat_id,
+                        message_id,
+                        original,
+                        (
+                            f"✅ Основной склад установлен в {quantity} шт. "
+                            "Активные WB/OZON FBS синхронизированы."
+                        ),
                     )
                     return True
                 return True
