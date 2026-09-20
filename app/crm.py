@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import logging
 import secrets
 from dataclasses import asdict
@@ -29,6 +30,13 @@ class CRMServer:
         self.service = service
         self.orders = orders
         self.db = db
+        try:
+            self._allowed_networks = tuple(
+                ipaddress.ip_network(value, strict=False)
+                for value in self.settings.crm_allowed_networks
+            )
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid CRM_ALLOWED_NETWORKS: {exc}") from exc
         self.runner: web.AppRunner | None = None
         self.site: web.TCPSite | None = None
 
@@ -36,6 +44,8 @@ class CRMServer:
         async def auth_middleware(
             request: web.Request, handler: web.RequestHandler
         ) -> web.StreamResponse:
+            if self._allowed_networks and not self._client_ip_allowed(request.remote):
+                raise web.HTTPForbidden(text="CRM access is not allowed from this network")
             if not (self.settings.crm_user and self.settings.crm_password):
                 return await handler(request)
             auth = request.headers.get("Authorization", "")
@@ -68,6 +78,17 @@ class CRMServer:
                 web.get("/api/orders/ozon", self.ozon_orders),
             ]
         )
+
+    def _client_ip_allowed(self, value: str | None) -> bool:
+        if not self._allowed_networks:
+            return True
+        if not value:
+            return False
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return False
+        return any(address in network for network in self._allowed_networks)
 
     async def start(self) -> None:
         if not self.settings.crm_enabled:
