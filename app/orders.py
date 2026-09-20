@@ -5,11 +5,15 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from .config import Settings
 from .db import StateDB
 from .telegram import TelegramBot
 from .wb_client import WildberriesClient
+
+if TYPE_CHECKING:
+    from .shared_inventory import SharedInventoryService
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +53,13 @@ class OrderMonitor:
         self._lock = asyncio.Lock()
         self.current_new_orders: dict[int, FBSOrder] = {}
         self.current_supply_orders: dict[int, str] = {}
+        self.inventory: SharedInventoryService | None = None
         self._ensure_schema()
+
+    def set_shared_inventory(
+        self, inventory: "SharedInventoryService"
+    ) -> None:
+        self.inventory = inventory
 
     def _ensure_schema(self) -> None:
         self.db.conn.execute(
@@ -369,6 +379,8 @@ class OrderMonitor:
 
         unseen = [o for o in ready if self._state(o.id) is None]
         if unseen:
+            if self.inventory is not None:
+                await self.inventory.consume_wb_orders(unseen)
             if not supplies:
                 try:
                     supplies = await self._supplies()
@@ -438,6 +450,8 @@ class OrderMonitor:
                 log.exception("Could not load supplies during recovery")
 
         recovered_new = 0
+        if new_orders and self.inventory is not None:
+            await self.inventory.consume_wb_orders(new_orders)
         for order in sorted(new_orders, key=lambda o: (o.created_at, o.id)):
             await self.tg.broadcast(
                 self.settings.telegram_chat_ids,
