@@ -54,10 +54,44 @@ class StockMonitorService:
         # notifications are generated. On subsequent restarts, compare against
         # persisted state so changes that happened while the bot was down are seen.
         await self.refresh_fbs(notify=True)
-        await self.refresh_wb(notify=True)
+        wb_startup_note = ""
+        try:
+            await self.refresh_wb(notify=True)
+        except Exception as exc:
+            if "WB API 429" not in str(exc):
+                raise
+            persisted = self.db.get_source("wb")
+            if persisted:
+                self.wb_stock = {
+                    nm_id: int(persisted.get(nm_id, 0))
+                    for nm_id in self.products
+                }
+                self._wb_loaded = True
+                wb_startup_note = (
+                    "\n⚠️ WB Analytics временно ограничил запросы (429); "
+                    "использован последний сохранённый снимок."
+                )
+                log.warning(
+                    "WB Analytics rate-limited at startup; using persisted snapshot"
+                )
+            else:
+                wb_startup_note = (
+                    "\n⚠️ WB Analytics временно ограничил запросы (429); "
+                    "свежие WB-остатки будут загружены фоновым циклом."
+                )
+                log.warning(
+                    "WB Analytics rate-limited at startup and no persisted snapshot exists"
+                )
 
         zeros_fbs = sum(1 for q in self.fbs_stock.values() if q == 0)
-        zeros_wb = sum(1 for q in self.wb_stock.values() if q == 0)
+        zeros_wb = (
+            sum(1 for q in self.wb_stock.values() if q == 0)
+            if self._wb_loaded
+            else None
+        )
+        wb_zero_text = (
+            str(zeros_wb) if zeros_wb is not None else "нет данных"
+        )
         await self.tg.broadcast(
             self.settings.telegram_chat_ids,
             (
@@ -65,8 +99,9 @@ class StockMonitorService:
                 f"Склад продавца: {self.warehouse.name}\n"
                 f"Товаров: {len(self.products)}\n"
                 f"С нулём на FBS: {zeros_fbs}\n"
-                f"С нулём на складах WB: {zeros_wb}\n\n"
+                f"С нулём на складах WB: {wb_zero_text}\n\n"
                 "Команды: /stocks, /zero, /status, /fbs_zero_all, /fbs_restore"
+                f"{wb_startup_note}"
             ),
         )
 
