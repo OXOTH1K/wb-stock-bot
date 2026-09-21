@@ -298,6 +298,17 @@ class StockMonitorService:
                     nm_id, available_qty
                 )
             else:
+                if (
+                    shared_inventory is not None
+                    and shared_inventory.available_quantity(sku) > 0
+                ):
+                    await shared_inventory.sync_sku(
+                        sku,
+                        raise_errors=False,
+                        force=True,
+                    )
+                    self.db.delete_pending_alert(alert_key)
+                    return
                 saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
                 saved_total = sum(saved.values())
                 if saved_total > 0:
