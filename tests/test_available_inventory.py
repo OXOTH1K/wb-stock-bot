@@ -71,14 +71,14 @@ class AvailableInventoryTests(unittest.IsolatedAsyncioTestCase):
         self.db.close()
         self.tmp.cleanup()
 
-    async def test_transfer_available_conserves_owned_stock(self):
+    async def test_available_is_a_limit_not_a_separate_stock_pool(self):
         await self.shared.initialize()
         self.assertEqual(
             (
                 self.shared.local_quantity("SKU-A"),
                 self.shared.available_quantity("SKU-A"),
             ),
-            (0, 3),
+            (3, 3),
         )
 
         await self.shared.set_local_stock(
@@ -92,7 +92,7 @@ class AvailableInventoryTests(unittest.IsolatedAsyncioTestCase):
                 self.shared.local_quantity("SKU-A"),
                 self.shared.available_quantity("SKU-A"),
             ),
-            (4, 6),
+            (7, 6),
         )
 
         await self.shared.set_available_stock(
@@ -103,10 +103,10 @@ class AvailableInventoryTests(unittest.IsolatedAsyncioTestCase):
                 self.shared.local_quantity("SKU-A"),
                 self.shared.available_quantity("SKU-A"),
             ),
-            (8, 2),
+            (7, 2),
         )
 
-    async def test_set_command_moves_delta_and_syncs_both_fbs(self):
+    async def test_set_command_changes_limit_without_changing_local(self):
         await self.shared.initialize()
         await self.shared.set_local_stock(
             "SKU-A", 7, reason="restock"
@@ -126,7 +126,7 @@ class AvailableInventoryTests(unittest.IsolatedAsyncioTestCase):
             self.shared.available_quantity("SKU-A"), 6
         )
         self.assertEqual(
-            self.shared.local_quantity("SKU-A"), 4
+            self.shared.local_quantity("SKU-A"), 7
         )
         self.assertEqual(
             self.wb_service.wb.writes[-1],
@@ -140,8 +140,26 @@ class AvailableInventoryTests(unittest.IsolatedAsyncioTestCase):
             tg.sent[-1][1],
         )
         self.assertIn(
-            "Мой склад: 7 → 4 шт.",
+            "Мой склад: 7 шт. (не изменён)",
             tg.sent[-1][1],
+        )
+
+    async def test_split_model_migrates_to_full_local_once(self):
+        self.db.ensure_local_stock("SKU-A", 2)
+        self.db.ensure_order_available("SKU-A", 3)
+
+        await self.shared.initialize()
+
+        self.assertEqual(
+            self.shared.local_quantity("SKU-A"), 5
+        )
+        self.assertEqual(
+            self.shared.available_quantity("SKU-A"), 3
+        )
+
+        await self.shared.initialize()
+        self.assertEqual(
+            self.shared.local_quantity("SKU-A"), 5
         )
 
     async def test_set_command_rejects_more_than_local_reserve(self):
@@ -160,10 +178,10 @@ class AvailableInventoryTests(unittest.IsolatedAsyncioTestCase):
             self.shared.available_quantity("SKU-A"), 3
         )
         self.assertEqual(
-            self.shared.local_quantity("SKU-A"), 0
+            self.shared.local_quantity("SKU-A"), 3
         )
         self.assertIn(
-            "Недостаточно товара",
+            "не может превышать",
             tg.sent[-1][1],
         )
 

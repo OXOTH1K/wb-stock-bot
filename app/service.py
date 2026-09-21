@@ -333,7 +333,7 @@ class StockMonitorService:
                         "Доступно для заказа: 0 шт.\n"
                         f"Мой склад: {local_qty} шт.\n"
                         "На складах WB: 0 шт.\n\n"
-                        "Перенести 1 или 5 шт. из «Моего склада» в «Доступно для заказа»?"
+                        "Установить «Доступно для заказа» в 1 или 5 шт.?"
                     )
                     keyboard = self._depletion_action_keyboard(nm_id)
         else:
@@ -526,10 +526,6 @@ class StockMonitorService:
                         f"Товар с артикулом «{sku}» не найден.",
                     )
                     return
-                before_available = (
-                    self.shared_inventory.available_quantity(sku)
-                )
-                before_local = self.shared_inventory.local_quantity(sku)
                 available = (
                     await self.shared_inventory.set_available_stock(
                         sku,
@@ -538,23 +534,12 @@ class StockMonitorService:
                     )
                 )
                 local = self.shared_inventory.local_quantity(sku)
-                delta = available - before_available
-                direction = (
-                    f"перенесено из «Моего склада»: {delta} шт."
-                    if delta > 0
-                    else (
-                        f"возвращено на «Мой склад»: {-delta} шт."
-                        if delta < 0
-                        else "количество не изменилось."
-                    )
-                )
                 await self.tg.send_message(
                     chat_id,
                     (
                         f"✅ {sku}\n"
                         f"Доступно для заказа: {available} шт.\n"
-                        f"Мой склад: {before_local} → {local} шт.\n"
-                        f"{direction}\n"
+                        f"Мой склад: {local} шт. (не изменён)\n"
                         "WB FBS и OZON FBS синхронизированы."
                     ),
                 )
@@ -562,7 +547,7 @@ class StockMonitorService:
                 await self.tg.send_message(
                     chat_id,
                     "⚠️ Обнулить «Доступно для заказа» у ВСЕХ товаров?\n"
-                    "Количество вернётся на «Мой склад», а WB/OZON FBS станут 0.",
+                    "«Мой склад» не изменится, WB/OZON FBS станут 0.",
                     reply_markup={
                         "inline_keyboard": [[
                             {"text": "Обнулить весь FBS", "callback_data": "fbsallzero:yes"},
@@ -586,7 +571,7 @@ class StockMonitorService:
                         (
                             f"♻️ Восстановить «Доступно для заказа»: "
                             f"{len(saved)} товаров, суммарно {saved_total} шт.?\n"
-                            "Количество будет перенесено с «Моего склада» и опубликовано в WB/OZON FBS."
+                            "«Мой склад» не изменится; значение будет опубликовано в WB/OZON FBS."
                         ),
                         reply_markup={
                             "inline_keyboard": [[
@@ -786,7 +771,7 @@ class StockMonitorService:
                 original_text,
                 (
                     f"✅ «Доступно для заказа» установлено в {quantity} шт. "
-                    "Товар перенесён с «Моего склада», WB/OZON FBS синхронизированы."
+                    "«Мой склад» не изменён, WB/OZON FBS синхронизированы."
                 ),
             )
             return
@@ -1003,8 +988,8 @@ class StockMonitorService:
                 original_text,
                 (
                     "✅ «Доступно для заказа» обнулено для всех товаров.\n"
-                    "Остаток возвращён на «Мой склад», WB/OZON FBS синхронизированы в 0.\n"
-                    f"Товаров: {count}, возвращено: {total} шт."
+                    "«Мой склад» не изменён, WB/OZON FBS синхронизированы в 0.\n"
+                    f"Товаров: {count}, ранее доступно: {total} шт."
                 ),
             )
             return
@@ -1094,7 +1079,7 @@ class StockMonitorService:
                 original_text,
                 (
                     "✅ «Доступно для заказа» восстановлено из сохранённого значения.\n"
-                    "Товар снова перенесён с «Моего склада», WB/OZON FBS синхронизированы.\n"
+                    "«Мой склад» не изменён, WB/OZON FBS синхронизированы.\n"
                     f"Товаров: {restored}, суммарно: {total} шт."
                 ),
             )
@@ -1250,7 +1235,7 @@ class StockMonitorService:
                         "skip",
                     )
                     await self._finish_action_message(
-                        chat_id, message_id, message_text, "⏭ Решение: не переносить товар в «Доступно для заказа»."
+                        chat_id, message_id, message_text, "⏭ Решение: не менять «Доступно для заказа»."
                     )
                     return
                 if choice not in {"1", "5"}:
@@ -1497,7 +1482,7 @@ class StockMonitorService:
                         f"Мой склад: {local_qty} шт. | "
                         f"Доступно для заказа: {available_qty} шт.\n"
                         "WB: 0 шт.\n\n"
-                        "Перенести 1 или 5 шт. в «Доступно для заказа»?"
+                        "Установить «Доступно для заказа» в 1 или 5 шт.?"
                     )
                     keyboard = self._depletion_action_keyboard(
                         nm_id

@@ -120,12 +120,9 @@ class FakeInventory:
     ):
         sku = str(sku)
         quantity = int(quantity)
-        before = self.available_quantity(sku)
-        delta = quantity - before
         local = self.local_quantity(sku)
-        if delta > local:
-            raise ValueError("Недостаточно товара")
-        self.local[sku] = local - delta
+        if quantity > local:
+            raise ValueError("Доступно больше физического остатка")
         self.available[sku] = quantity
         self.set_calls.append((sku, quantity, reason))
         self.db.set_channel_stock("ozon_fbs", sku, quantity)
@@ -255,7 +252,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_fbo_appearance_offers_zeroing_ozon_fbs(self):
         inventory = FakeInventory(
             self.db,
-            local={"SKU-A": 0, "OZON-ONLY": 0},
+            local={"SKU-A": 5, "OZON-ONLY": 4},
             available={"SKU-A": 5, "OZON-ONLY": 4},
         )
         self.ozon.set_shared_inventory(inventory)
@@ -282,7 +279,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_fbo_zero_action_suppresses_only_ozon_fbs(self):
         inventory = FakeInventory(
             self.db,
-            local={"SKU-A": 2, "OZON-ONLY": 0},
+            local={"SKU-A": 5, "OZON-ONLY": 4},
             available={"SKU-A": 5, "OZON-ONLY": 4},
         )
         self.ozon.set_shared_inventory(inventory)
@@ -304,7 +301,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
             inventory.available_quantity("SKU-A"), 5
         )
         self.assertEqual(
-            inventory.local_quantity("SKU-A"), 2
+            inventory.local_quantity("SKU-A"), 5
         )
         self.assertEqual(
             self.db.get_channel_stock(
@@ -326,7 +323,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_total_ozon_depletion_offers_transfer_to_available(self):
         inventory = FakeInventory(
             self.db,
-            local={"SKU-A": 5, "OZON-ONLY": 0},
+            local={"SKU-A": 5, "OZON-ONLY": 4},
             available={"SKU-A": 0, "OZON-ONLY": 4},
         )
         self.ozon.set_shared_inventory(inventory)
@@ -358,7 +355,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_depletion_add_button_sets_shared_available_stock(self):
         inventory = FakeInventory(
             self.db,
-            local={"SKU-A": 5, "OZON-ONLY": 0},
+            local={"SKU-A": 5, "OZON-ONLY": 4},
             available={"SKU-A": 0, "OZON-ONLY": 4},
         )
         self.ozon.set_shared_inventory(inventory)

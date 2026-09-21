@@ -199,7 +199,7 @@ class CRMServer:
             )
             target = min(int(local_now), target)
             if target:
-                self.db.transfer_order_available(
+                self.db.set_order_available(
                     sku,
                     target,
                     reason="crm_bootstrap",
@@ -460,12 +460,10 @@ class CRMServer:
                     )
                 )
             else:
-                _local, quantity = (
-                    self.db.transfer_order_available(
-                        sku,
-                        quantity,
-                        reason="crm_available_set",
-                    )
+                quantity = self.db.set_order_available(
+                    sku,
+                    quantity,
+                    reason="crm_available_set",
                 )
         except ValueError as exc:
             raise web.HTTPBadRequest(

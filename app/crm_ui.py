@@ -54,7 +54,7 @@ INDEX_HTML = r"""<!doctype html>
     <div id="inventoryCards" class="cards"></div>
     <div class="panel">
       <div class="panel-head">
-        <div><h2>Остатки товаров</h2><div class="sub">«Мой склад» и «Доступно для заказа» редактируются отдельно; изменение доступного перемещает товар между этими пулами</div></div>
+        <div><h2>Остатки товаров</h2><div class="sub">«Мой склад» — полный физический остаток; «Доступно для заказа» — сколько из него можно продавать сейчас</div></div>
         <input id="inventorySearch" class="search" placeholder="Поиск по артикулу или названию">
       </div>
       <div id="inventoryBody" class="spinner">Загрузка…</div>
