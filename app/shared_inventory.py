@@ -93,7 +93,9 @@ class SharedInventoryService:
                 legacy_total = int(ozon_stock.get(sku, 0))
             self.db.ensure_local_stock(sku, legacy_total)
 
-        # Legacy per-channel suppression becomes a zero shared sellable pool.
+        # Preserve legacy per-channel marketplace suppression. It affects
+        # only that marketplace FBS; the shared available pool remains sellable
+        # on the other marketplace.
         migrated: set[int] = set()
         for (nm_id, _chrt_id), _quantity in self.db.get_saved_fbs(
             "wb_auto"
@@ -113,18 +115,13 @@ class SharedInventoryService:
                 )
 
         # One-time per-SKU migration from the old single pool:
-        # currently sellable FBS stock moves out of "Мой склад" into
-        # "Доступно для заказа". This preserves local+available total.
+        # currently sellable stock moves out of "Мой склад" into
+        # "Доступно для заказа". Individual marketplace suppression does not
+        # zero this pool; only the suppressed platform FBS stays at zero.
         existing_available = self.db.get_order_available(
             tuple(all_skus)
         )
         for sku in all_skus:
-            if sku in existing_available:
-                continue
-            suppressed = (
-                self.db.is_channel_suppressed("wb", sku)
-                or self.db.is_channel_suppressed("ozon", sku)
-            )
             wb_qty = 0
             product = wb_by_sku.get(sku)
             if product is not None:
@@ -134,17 +131,91 @@ class SharedInventoryService:
                     )
                 )
             ozon_qty = int(ozon_stock.get(sku, 0))
-            current_marketplace = (
-                0 if suppressed else max(wb_qty, ozon_qty)
+            wb_reason = self.db.get_channel_suppression_reason(
+                "wb", sku
+            )
+            ozon_reason = self.db.get_channel_suppression_reason(
+                "ozon", sku
+            )
+            marketplace_suppressed = (
+                wb_reason == "marketplace_stock"
+                or ozon_reason == "marketplace_stock"
+            )
+            mass_suppressed = (
+                wb_reason == "mass" or ozon_reason == "mass"
             )
             local = self.local_quantity(sku)
-            target = min(local, current_marketplace)
-            self.db.ensure_order_available(sku, 0)
-            if target:
+
+            if sku not in existing_available:
+                current_marketplace = max(wb_qty, ozon_qty)
+                if (
+                    current_marketplace <= 0
+                    and marketplace_suppressed
+                    and not mass_suppressed
+                ):
+                    current_marketplace = local
+                target = (
+                    0
+                    if mass_suppressed
+                    else min(local, current_marketplace)
+                )
+                self.db.ensure_order_available(sku, 0)
+                if target:
+                    self.db.transfer_order_available(
+                        sku,
+                        target,
+                        reason="migration_from_legacy_pool",
+                    )
+                continue
+
+            # PR #27 briefly implemented individual suppression by moving the
+            # shared available pool back to "Мой склад". Repair that state on
+            # startup while keeping the affected marketplace itself suppressed.
+            available = int(existing_available.get(sku, 0))
+            if (
+                available != 0
+                or not marketplace_suppressed
+                or mass_suppressed
+                or local <= 0
+            ):
+                continue
+
+            recovery_candidates = [
+                int(
+                    self.db.get_available_snapshot(
+                        "marketplace:wb"
+                    ).get(sku, 0)
+                ),
+                int(
+                    self.db.get_available_snapshot(
+                        "marketplace:ozon"
+                    ).get(sku, 0)
+                ),
+            ]
+            if wb_reason != "marketplace_stock":
+                recovery_candidates.append(wb_qty)
+            if ozon_reason != "marketplace_stock":
+                recovery_candidates.append(ozon_qty)
+            recovered = max(recovery_candidates)
+            if recovered <= 0:
+                recovered = local
+            recovered = min(local, recovered)
+            if recovered > 0:
                 self.db.transfer_order_available(
                     sku,
-                    target,
-                    reason="migration_from_legacy_pool",
+                    recovered,
+                    reason="migration_restore_platform_suppression",
+                )
+                self.db.clear_available_snapshot(
+                    "marketplace:wb", sku
+                )
+                self.db.clear_available_snapshot(
+                    "marketplace:ozon", sku
+                )
+                await self.sync_sku(
+                    sku,
+                    raise_errors=False,
+                    force=True,
                 )
 
     def _ensure_available_for_sale(
