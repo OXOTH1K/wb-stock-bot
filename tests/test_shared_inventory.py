@@ -348,6 +348,64 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
             self.shared.local_quantity("OZON-ONLY"), 0
         )
 
+    async def test_mass_zero_does_not_override_individual_suppression(self):
+        await self.shared.initialize()
+        await self.shared.suppress_channel(
+            "ozon", "SKU-A", "marketplace_stock"
+        )
+
+        count, total = await self.shared.suppress_wb_mass()
+
+        self.assertEqual((count, total), (0, 0))
+        self.assertEqual(
+            self.db.get_channel_suppression_reason(
+                "ozon", "SKU-A"
+            ),
+            "marketplace_stock",
+        )
+        self.assertIsNone(
+            self.db.get_channel_suppression_reason(
+                "wb", "SKU-A"
+            )
+        )
+
+        restored, restored_total = (
+            await self.shared.restore_wb_mass()
+        )
+        self.assertEqual((restored, restored_total), (0, 0))
+        self.assertEqual(
+            self.db.get_channel_suppression_reason(
+                "ozon", "SKU-A"
+            ),
+            "marketplace_stock",
+        )
+
+    async def test_manual_available_edit_cancels_mass_restore_for_sku(self):
+        await self.shared.initialize()
+        await self.shared.suppress_wb_mass()
+
+        self.assertEqual(
+            self.db.get_available_snapshot("mass_shared"),
+            {"SKU-A": 3},
+        )
+
+        await self.shared.set_available_stock(
+            "SKU-A", 1, reason="manual_override"
+        )
+
+        self.assertEqual(
+            self.db.get_available_snapshot("mass_shared"),
+            {},
+        )
+        restored, total = await self.shared.restore_wb_mass()
+        self.assertEqual((restored, total), (0, 0))
+        self.assertEqual(
+            self.shared.available_quantity("SKU-A"), 1
+        )
+        self.assertEqual(
+            self.shared.local_quantity("SKU-A"), 2
+        )
+
     async def test_ozon_suppression_zeros_both_fbs_and_restores_snapshot(self):
         await self.shared.initialize()
 
