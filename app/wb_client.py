@@ -12,7 +12,9 @@ log = logging.getLogger(__name__)
 
 
 class WBAPIError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class WildberriesClient:
@@ -73,7 +75,8 @@ class WildberriesClient:
                         return None
                     if response.status >= 400:
                         raise WBAPIError(
-                            f"WB API {response.status}: {text[:800]}"
+                            f"WB API {response.status}: {text[:800]}",
+                            status=response.status,
                         )
                     if not text:
                         return None
