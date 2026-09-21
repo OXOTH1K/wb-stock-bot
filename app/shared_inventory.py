@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 
 class SharedInventoryService:
-    """Keep the physical/local stock as the source of truth."""
+    """Manage physical local stock and the shared order-available pool."""
 
     def __init__(
         self,
@@ -51,6 +51,13 @@ class SharedInventoryService:
             self.db.get_local_stock((str(sku),)).get(str(sku), 0)
         )
 
+    def available_quantity(self, sku: str) -> int:
+        return int(
+            self.db.get_order_available((str(sku),)).get(
+                str(sku), 0
+            )
+        )
+
     def _clear_wb_decisions(self, sku: str) -> None:
         product = self._wb_by_sku().get(str(sku))
         if product is not None:
@@ -61,17 +68,19 @@ class SharedInventoryService:
 
     async def initialize(self) -> None:
         wb_by_sku = self._wb_by_sku()
+        all_skus = sorted(self.all_skus())
         ozon_stock = self.db.get_channel_stock(
-            "ozon_fbs", tuple(self.all_skus())
+            "ozon_fbs", tuple(all_skus)
         )
 
-        for sku in sorted(self.all_skus()):
+        # First preserve the old single-pool quantity as physical total.
+        for sku in all_skus:
             wb_product = wb_by_sku.get(sku)
             if wb_product is not None:
                 saved = self.db.get_saved_product_fbs(
                     "wb_auto", wb_product.nm_id
                 )
-                initial = (
+                legacy_total = (
                     sum(int(value) for value in saved.values())
                     if saved
                     else int(
@@ -81,11 +90,10 @@ class SharedInventoryService:
                     )
                 )
             else:
-                initial = int(ozon_stock.get(sku, 0))
-            self.db.ensure_local_stock(sku, initial)
+                legacy_total = int(ozon_stock.get(sku, 0))
+            self.db.ensure_local_stock(sku, legacy_total)
 
-        # Migrate legacy per-product WB auto-zero snapshots into explicit
-        # per-channel suppression state.
+        # Legacy per-channel suppression becomes a zero shared sellable pool.
         migrated: set[int] = set()
         for (nm_id, _chrt_id), _quantity in self.db.get_saved_fbs(
             "wb_auto"
@@ -104,13 +112,48 @@ class SharedInventoryService:
                     "wb", sku, "marketplace_stock"
                 )
 
-    def _ensure_local_for_sale(
+        # One-time per-SKU migration from the old single pool:
+        # currently sellable FBS stock moves out of "Мой склад" into
+        # "Доступно для заказа". This preserves local+available total.
+        existing_available = self.db.get_order_available(
+            tuple(all_skus)
+        )
+        for sku in all_skus:
+            if sku in existing_available:
+                continue
+            suppressed = (
+                self.db.is_channel_suppressed("wb", sku)
+                or self.db.is_channel_suppressed("ozon", sku)
+            )
+            wb_qty = 0
+            product = wb_by_sku.get(sku)
+            if product is not None:
+                wb_qty = int(
+                    self.wb_service.fbs_stock.get(
+                        product.nm_id, 0
+                    )
+                )
+            ozon_qty = int(ozon_stock.get(sku, 0))
+            current_marketplace = (
+                0 if suppressed else max(wb_qty, ozon_qty)
+            )
+            local = self.local_quantity(sku)
+            target = min(local, current_marketplace)
+            self.db.ensure_order_available(sku, 0)
+            if target:
+                self.db.transfer_order_available(
+                    sku,
+                    target,
+                    reason="migration_from_legacy_pool",
+                )
+
+    def _ensure_available_for_sale(
         self,
         source: str,
         sku: str,
         pending_quantity: int,
     ) -> None:
-        existing = self.db.get_local_stock((sku,))
+        existing = self.db.get_order_available((sku,))
         if sku in existing:
             return
 
@@ -118,7 +161,9 @@ class SharedInventoryService:
         wb_product = self._wb_by_sku().get(sku)
         if wb_product is not None:
             current = int(
-                self.wb_service.fbs_stock.get(wb_product.nm_id, 0)
+                self.wb_service.fbs_stock.get(
+                    wb_product.nm_id, 0
+                )
             )
             if source == "wb":
                 current += int(pending_quantity)
@@ -133,9 +178,12 @@ class SharedInventoryService:
                 current += int(pending_quantity)
             candidates.append(current)
 
-        self.db.ensure_local_stock(
+        self.db.ensure_local_stock(sku, 0)
+        self.db.ensure_order_available(
             sku,
-            max(candidates) if candidates else int(pending_quantity),
+            max(candidates)
+            if candidates
+            else int(pending_quantity),
         )
 
     async def consume_sales(
@@ -154,7 +202,7 @@ class SharedInventoryService:
                     pending_by_sku[clean_sku] += int(quantity)
 
             for sku, quantity in pending_by_sku.items():
-                self._ensure_local_for_sale(
+                self._ensure_available_for_sale(
                     source, sku, quantity
                 )
 
@@ -163,7 +211,7 @@ class SharedInventoryService:
                 clean_sku = str(sku).strip()
                 if not clean_sku or int(quantity) <= 0:
                     continue
-                applied, before, after = self.db.apply_sale_once(
+                applied, before, after = self.db.apply_available_sale_once(
                     source,
                     str(event_id),
                     clean_sku,
@@ -175,7 +223,7 @@ class SharedInventoryService:
                 self._clear_wb_decisions(clean_sku)
                 if before < int(quantity):
                     log.warning(
-                        "Local inventory underflow prevented for %s: "
+                        "Order-available inventory underflow prevented for %s: "
                         "before=%d sale=%d source=%s",
                         clean_sku,
                         before,
@@ -186,7 +234,6 @@ class SharedInventoryService:
             for sku in changed:
                 await self.sync_sku(
                     sku,
-                    skip_channel=source,
                     raise_errors=False,
                 )
             return changed
@@ -224,21 +271,37 @@ class SharedInventoryService:
         quantity: int,
         reason: str = "crm",
     ) -> int:
+        """Edit physical local stock without changing marketplace FBS."""
         async with self._lock:
             result = self.db.set_local_stock(
                 sku, quantity, reason=reason
             )
             self._clear_wb_decisions(sku)
-            # An explicit local-stock edit is also an explicit request to
-            # republish that quantity. Force the marketplace writes even when
-            # our cached FBS value already matches: the cache can be stale if a
-            # manual marketplace edit happened between background refreshes.
+            return result
+
+    async def set_available_stock(
+        self,
+        sku: str,
+        quantity: int,
+        reason: str = "manual",
+        *,
+        force: bool = True,
+    ) -> int:
+        """Move stock between local and sellable pool, then sync both FBS."""
+        async with self._lock:
+            _local, available = self.db.transfer_order_available(
+                sku, quantity, reason=reason
+            )
+            self._clear_wb_decisions(sku)
+            if available > 0:
+                self.db.clear_channel_suppressed("wb", sku)
+                self.db.clear_channel_suppressed("ozon", sku)
             await self.sync_sku(
                 sku,
                 raise_errors=True,
-                force=True,
+                force=force,
             )
-            return result
+            return available
 
     async def _write_wb(self, sku: str, quantity: int) -> None:
         product = self._wb_by_sku().get(sku)
@@ -289,13 +352,10 @@ class SharedInventoryService:
         sku = str(sku).strip()
         if not sku:
             return
-        quantity = self.local_quantity(sku)
+        quantity = self.available_quantity(sku)
         errors: list[str] = []
 
-        if (
-            skip_channel != "wb"
-            and not self.is_suppressed("wb", sku)
-        ):
+        if skip_channel != "wb":
             product = self._wb_by_sku().get(sku)
             if product is not None:
                 current = int(
@@ -311,7 +371,6 @@ class SharedInventoryService:
 
         if (
             skip_channel != "ozon"
-            and not self.is_suppressed("ozon", sku)
             and self.ozon is not None
             and sku in self.db.get_channel_catalog("ozon")
         ):
@@ -339,15 +398,32 @@ class SharedInventoryService:
         sku: str,
         reason: str = "marketplace_stock",
     ) -> None:
+        """Compatibility action: zero the shared available pool.
+
+        Since WB and OZON FBS now mirror one shared sellable quantity, a
+        marketplace-stock suppression zeros both FBS channels and returns the
+        sellable units to the physical local warehouse.
+        """
+        if channel not in {"wb", "ozon"}:
+            raise ValueError(f"Unknown channel: {channel}")
         async with self._lock:
-            if channel == "wb":
-                await self._write_wb(sku, 0)
-            elif channel == "ozon":
-                await self._write_ozon(sku, 0)
-            else:
-                raise ValueError(f"Unknown channel: {channel}")
+            before = self.available_quantity(sku)
+            if before > 0:
+                self.db.save_available_snapshot(
+                    f"marketplace:{channel}",
+                    sku,
+                    before,
+                )
+                self.db.transfer_order_available(
+                    sku,
+                    0,
+                    reason=f"{channel}_{reason}_zero",
+                )
             self.db.set_channel_suppressed(
                 channel, sku, reason
+            )
+            await self.sync_sku(
+                sku, raise_errors=True, force=True
             )
 
     async def restore_channel(
@@ -355,105 +431,131 @@ class SharedInventoryService:
         channel: str,
         sku: str,
     ) -> int:
+        if channel not in {"wb", "ozon"}:
+            raise ValueError(f"Unknown channel: {channel}")
         async with self._lock:
-            quantity = self.local_quantity(sku)
-            if channel == "wb":
-                await self._write_wb(sku, quantity)
-            elif channel == "ozon":
-                await self._write_ozon(sku, quantity)
-            else:
-                raise ValueError(f"Unknown channel: {channel}")
+            snapshot = self.db.get_available_snapshot(
+                f"marketplace:{channel}"
+            )
+            target = int(snapshot.get(sku, 0))
+            if target <= 0:
+                target = min(
+                    self.local_quantity(sku),
+                    self.available_quantity(sku),
+                )
+            if target > self.local_quantity(sku):
+                target = self.local_quantity(sku)
+            _local, available = self.db.transfer_order_available(
+                sku,
+                target,
+                reason=f"{channel}_marketplace_restore",
+            )
             self.db.clear_channel_suppressed(channel, sku)
-            return quantity
+            self.db.clear_available_snapshot(
+                f"marketplace:{channel}", sku
+            )
+            await self.sync_sku(
+                sku, raise_errors=True, force=True
+            )
+            return available
+
+    async def _suppress_mass(
+        self, scope: str, skus: list[str]
+    ) -> tuple[int, int]:
+        total = 0
+        count = 0
+        for sku in skus:
+            current = self.available_quantity(sku)
+            if current <= 0:
+                continue
+            self.db.save_available_snapshot(
+                scope, sku, current
+            )
+            self.db.transfer_order_available(
+                sku, 0, reason=f"{scope}_zero"
+            )
+            total += current
+            count += 1
+        for sku in skus:
+            await self.sync_sku(
+                sku, raise_errors=True, force=True
+            )
+        return count, total
+
+    async def _restore_mass(
+        self, scope: str
+    ) -> tuple[int, int]:
+        snapshot = self.db.get_available_snapshot(scope)
+        restored = 0
+        total = 0
+        for sku, wanted in snapshot.items():
+            target = min(
+                int(wanted), self.local_quantity(sku)
+            )
+            self.db.transfer_order_available(
+                sku, target, reason=f"{scope}_restore"
+            )
+            await self.sync_sku(
+                sku, raise_errors=True, force=True
+            )
+            restored += 1
+            total += target
+        self.db.clear_available_snapshot(scope)
+        return restored, total
 
     async def suppress_wb_mass(self) -> None:
-        existing = self.db.list_channel_suppressions("wb")
-        for sku in self._wb_by_sku():
-            if sku not in existing:
+        async with self._lock:
+            skus = sorted(self._wb_by_sku())
+            for sku in skus:
                 self.db.set_channel_suppressed(
                     "wb", sku, "mass"
                 )
+            await self._suppress_mass("mass_shared", skus)
 
     async def restore_wb_mass(self) -> tuple[int, int]:
-        skus = [
-            sku
-            for sku in self.db.list_channel_suppressions("wb")
-            if self.db.get_channel_suppression_reason(
-                "wb", sku
-            ) == "mass"
-        ]
-        restored = 0
-        total = 0
-        for sku in skus:
-            quantity = self.local_quantity(sku)
-            await self._write_wb(sku, quantity)
-            self.db.clear_channel_suppressed("wb", sku)
-            restored += 1
-            total += quantity
-        return restored, total
+        async with self._lock:
+            restored, total = await self._restore_mass(
+                "mass_shared"
+            )
+            self.db.clear_channel_suppressions_by_reason(
+                "wb", "mass"
+            )
+            self.db.clear_channel_suppressions_by_reason(
+                "ozon", "mass"
+            )
+            return restored, total
 
     async def suppress_ozon_mass(self) -> tuple[int, int]:
         if self.ozon is None:
-            raise RuntimeError("OZON integration is not configured")
-        catalog = self.db.get_channel_catalog("ozon")
-        if not catalog:
-            return 0, 0
-
-        existing = self.db.list_channel_suppressions("ozon")
-        marked: list[str] = []
-        for sku in sorted(catalog):
-            if sku in existing:
-                continue
-            self.db.set_channel_suppressed(
-                "ozon", sku, "mass"
+            raise RuntimeError(
+                "OZON integration is not configured"
             )
-            marked.append(sku)
-
-        current = self.db.get_channel_stock(
-            "ozon_fbs", tuple(catalog)
-        )
-        before_total = sum(
-            int(current.get(sku, 0))
-            for sku in catalog
-        )
-        quantities = {sku: 0 for sku in catalog}
-        try:
-            await self.ozon.set_fbs_stocks(quantities)
-        except Exception:
-            for sku in marked:
-                if self.db.get_channel_suppression_reason(
-                    "ozon", sku
-                ) == "mass":
-                    self.db.clear_channel_suppressed(
-                        "ozon", sku
-                    )
-            raise
-        return len(quantities), before_total
+        async with self._lock:
+            skus = sorted(self.db.get_channel_catalog("ozon"))
+            for sku in skus:
+                self.db.set_channel_suppressed(
+                    "ozon", sku, "mass"
+                )
+            return await self._suppress_mass(
+                "mass_shared", skus
+            )
 
     async def restore_ozon_mass(self) -> tuple[int, int]:
         if self.ozon is None:
-            raise RuntimeError("OZON integration is not configured")
-        skus = [
-            sku
-            for sku in self.db.list_channel_suppressions("ozon")
-            if self.db.get_channel_suppression_reason(
-                "ozon", sku
+            raise RuntimeError(
+                "OZON integration is not configured"
             )
-            == "mass"
-        ]
-        if not skus:
-            return 0, 0
-
-        quantities = {
-            sku: self.local_quantity(sku)
-            for sku in skus
-        }
-        await self.ozon.set_fbs_stocks(quantities)
-        for sku in skus:
-            self.db.clear_channel_suppressed(
-                "ozon", sku
+        async with self._lock:
+            restored, total = await self._restore_mass(
+                "mass_shared"
             )
-        return len(quantities), sum(quantities.values())
+            self.db.clear_channel_suppressions_by_reason(
+                "wb", "mass"
+            )
+            self.db.clear_channel_suppressions_by_reason(
+                "ozon", "mass"
+            )
+            return restored, total
 
     async def reconcile_all(self) -> None:
         for sku in sorted(self.all_skus()):
