@@ -366,7 +366,7 @@ class StockActionTests(unittest.IsolatedAsyncioTestCase):
         )
         await service.handle_callback(123, 9, "fbsadd:100:skip", "alert")
         self.assertEqual(wb.updates, [])
-        self.assertIn("не переносить", tg.edits[-1][2])
+        self.assertIn("не менять", tg.edits[-1][2])
 
 
 if __name__ == "__main__":
