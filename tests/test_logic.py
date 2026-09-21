@@ -305,7 +305,7 @@ class StockActionTests(unittest.IsolatedAsyncioTestCase):
         )
         buttons = service._wb_appearance_action_keyboard(100)["inline_keyboard"][0]
         self.assertEqual(
-            [b["text"] for b in buttons], ["Обнулить доступное", "Не обнулять"]
+            [b["text"] for b in buttons], ["Обнулить WB FBS", "Не обнулять WB FBS"]
         )
 
     async def test_add_five_sets_single_variant_fbs_to_five(self):

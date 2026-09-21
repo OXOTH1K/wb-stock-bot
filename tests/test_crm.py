@@ -60,6 +60,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_sku["SKU-B"]["local"], 4)
         self.assertEqual(by_sku["SKU-B"]["available"], 0)
         self.assertTrue(by_sku["SKU-B"]["fbs_suppressed"])
+        self.assertEqual(by_sku["SKU-B"]["drift_channels"], [])
         self.assertIsNone(by_sku["SKU-A"]["ozon_fbs"])
         self.assertIsNone(by_sku["SKU-A"]["ozon_fbo"])
 
@@ -215,6 +216,8 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('title="Сохранить «Доступно для заказа»"', INDEX_HTML)
         self.assertIn("Доступно для заказа", INDEX_HTML)
         self.assertIn("Склад OZON (FBO)", INDEX_HTML)
+        self.assertIn("WB FBS намеренно 0", INDEX_HTML)
+        self.assertIn("OZON FBS намеренно 0", INDEX_HTML)
 
     async def test_network_allowlist_accepts_lan_and_rejects_other_networks(self):
         self.crm._allowed_networks = (

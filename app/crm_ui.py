@@ -101,6 +101,12 @@ function renderInventory() {
   let html = '<div class="table-wrap"><table><thead><tr><th>Товар</th><th>Мой склад</th><th>Доступно для заказа</th><th>WB FBS</th><th>Склады WB</th><th>OZON FBS</th><th>Склад OZON (FBO)</th><th>Состояние</th></tr></thead><tbody>';
   for (const x of rows) {
     const badges = [];
+    if (x.fbs_suppressed) {
+      badges.push('<span class="badge warn">WB FBS намеренно 0</span>');
+    }
+    if (x.ozon_fbs_suppressed) {
+      badges.push('<span class="badge warn">OZON FBS намеренно 0</span>');
+    }
     for (const channel of (x.drift_channels || [])) {
       badges.push('<span class="badge bad">'+esc(channel)+' ≠ доступно</span>');
     }
