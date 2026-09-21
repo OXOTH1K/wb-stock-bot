@@ -496,7 +496,7 @@ class OzonIntegration:
             fbs_qty != 0
             or fbo_qty != 0
             or available > 0
-            or reason == "mass"
+            or reason in {"mass", "marketplace_stock"}
         ):
             return
         if self._stock_decision_matches(
@@ -612,7 +612,11 @@ class OzonIntegration:
                         "marketplace:ozon"
                     ).get(sku, 0)
                 )
-                keyboard = self._stock_keyboard(sku, "restore")
+                keyboard = (
+                    self._stock_keyboard(sku, "restore")
+                    if restore_qty > 0
+                    else None
+                )
                 if (
                     keyboard is not None
                     and not self._stock_decision_matches(
@@ -691,6 +695,13 @@ class OzonIntegration:
                 if reason == "mass":
                     continue
                 if reason == "marketplace_stock" and local > 0:
+                    restore_qty = int(
+                        self.db.get_available_snapshot(
+                            "marketplace:ozon"
+                        ).get(sku, 0)
+                    )
+                    if restore_qty <= 0:
+                        continue
                     if self._stock_decision_matches(
                         sku, "restore", fbs_qty, fbo_qty
                     ):
@@ -708,7 +719,7 @@ class OzonIntegration:
                             f"Артикул продавца: {sku}\n"
                             f"Мой склад: {local} шт.\n"
                             f"Сохранено до обнуления: "
-                            f"{int(self.db.get_available_snapshot('marketplace:ozon').get(sku, 0))} шт.\n\n"
+                            f"{restore_qty} шт.\n\n"
                             "Вернуть в «Доступно для заказа» и оба FBS?"
                         ),
                         reply_markup=keyboard,
@@ -817,15 +828,21 @@ class OzonIntegration:
                 "ℹ️ Массово обнулённых OZON FBS-остатков нет.",
             )
             return True
-        total = sum(
-            self.inventory.local_quantity(sku)
-            for sku in mass_skus
+        saved = self.db.get_available_snapshot(
+            "mass_shared"
         )
+        total = sum(int(value) for value in saved.values())
+        if not saved:
+            await self.tg.send_message(
+                chat_id,
+                "ℹ️ Сохранённого массового значения «Доступно для заказа» нет.",
+            )
+            return True
         await self.tg.send_message(
             chat_id,
             (
                 f"♻️ Восстановить сохранённое «Доступно для заказа»?\n"
-                f"Товаров: {len(mass_skus)}, суммарно: {total} шт."
+                f"Товаров: {len(saved)}, суммарно: {total} шт."
             ),
             reply_markup={
                 "inline_keyboard": [
@@ -1143,7 +1160,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⏭ OZON FBS оставлен без изменений.",
+                        "⏭ «Доступно для заказа» оставлено без изменений.",
                     )
                     return True
                 if action == "skiprestore":
@@ -1158,7 +1175,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⏭ OZON FBS не восстанавливать.",
+                        "⏭ Сохранённое «Доступно для заказа» не восстанавливать.",
                     )
                     return True
                 if action == "skipadd":
@@ -1284,7 +1301,7 @@ class OzonIntegration:
                 log.exception("Ozon stock callback failed: %s", data)
                 await self.tg.send_message(
                     chat_id,
-                    f"⚠️ Не удалось изменить OZON FBS: {exc}",
+                    f"⚠️ Не удалось изменить «Доступно для заказа»: {exc}",
                 )
                 return True
 
