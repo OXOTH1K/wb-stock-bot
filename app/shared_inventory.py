@@ -503,14 +503,16 @@ class SharedInventoryService:
         self.db.clear_available_snapshot(scope)
         return restored, total
 
-    async def suppress_wb_mass(self) -> None:
+    async def suppress_wb_mass(self) -> tuple[int, int]:
         async with self._lock:
-            skus = sorted(self._wb_by_sku())
+            skus = sorted(self.all_skus())
             for sku in skus:
                 self.db.set_channel_suppressed(
                     "wb", sku, "mass"
                 )
-            await self._suppress_mass("mass_shared", skus)
+            return await self._suppress_mass(
+                "mass_shared", skus
+            )
 
     async def restore_wb_mass(self) -> tuple[int, int]:
         async with self._lock:
@@ -531,7 +533,7 @@ class SharedInventoryService:
                 "OZON integration is not configured"
             )
         async with self._lock:
-            skus = sorted(self.db.get_channel_catalog("ozon"))
+            skus = sorted(self.all_skus())
             for sku in skus:
                 self.db.set_channel_suppressed(
                     "ozon", sku, "mass"
