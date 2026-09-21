@@ -241,10 +241,7 @@ class StockMonitorService:
                 or wb_qty <= 0
                 or (
                     shared_inventory is not None
-                    and (
-                        shared_inventory.is_suppressed("wb", sku)
-                        or shared_inventory.is_suppressed("ozon", sku)
-                    )
+                    and shared_inventory.is_suppressed("wb", sku)
                 )
             ):
                 self.db.delete_pending_alert(alert_key)
@@ -265,8 +262,8 @@ class StockMonitorService:
                 f"Мой склад: {local_qty} шт.\n"
                 f"Доступно для заказа: {available_qty} шт.\n"
                 f"На складах WB: было {old_qty} шт. → стало {wb_qty} шт.\n\n"
-                "Обнулить «Доступно для заказа»? "
-                "Тогда WB FBS и OZON FBS станут 0, а товар вернётся на «Мой склад»."
+                "Обнулить только WB FBS? "
+                "«Доступно для заказа», OZON FBS и «Мой склад» не изменятся."
             )
             keyboard = self._wb_appearance_action_keyboard(nm_id)
         elif alert_type == "depletion":
@@ -279,44 +276,27 @@ class StockMonitorService:
                 if shared_inventory is not None
                 else None
             )
-            any_shared_suppression = (
-                shared_inventory is not None
-                and (
-                    self.db.is_channel_suppressed("wb", sku)
-                    or self.db.is_channel_suppressed("ozon", sku)
-                )
-            )
             if (
                 shared_inventory is not None
                 and wb_reason == "marketplace_stock"
             ):
-                local_qty = shared_inventory.local_quantity(sku)
-                restore_qty = int(
-                    self.db.get_available_snapshot(
-                        "marketplace:wb"
-                    ).get(sku, 0)
-                )
-                if restore_qty <= 0 or local_qty <= 0:
+                available_qty = shared_inventory.available_quantity(sku)
+                if available_qty <= 0:
                     self.db.clear_channel_suppressed("wb", sku)
                     self.db.clear_saved_product_fbs("wb_auto", nm_id)
                     self.db.delete_pending_alert(alert_key)
                     return
-                restore_qty = min(restore_qty, local_qty)
                 text = (
                     "🔴 Товар закончился на складе WB\n"
                     f"Артикул продавца: {product.vendor_code or '—'}\n"
-                    "Доступно для заказа: 0 шт.\n"
+                    "WB FBS сейчас намеренно равен 0.\n"
                     "На складах WB: 0 шт.\n\n"
-                    f"Мой склад: {local_qty} шт.\n"
-                    f"До обнуления было доступно: {restore_qty} шт.\n"
-                    "Вернуть это количество в «Доступно для заказа» и оба FBS?"
+                    f"Доступно для заказа: {available_qty} шт.\n"
+                    "Вернуть текущее доступное количество только на WB FBS?"
                 )
                 keyboard = self._saved_restore_keyboard(
-                    nm_id, restore_qty
+                    nm_id, available_qty
                 )
-            elif any_shared_suppression:
-                self.db.delete_pending_alert(alert_key)
-                return
             else:
                 saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
                 saved_total = sum(saved.values())
@@ -695,8 +675,8 @@ class StockMonitorService:
     def _wb_appearance_action_keyboard(self, nm_id: int) -> dict:
         return {
             "inline_keyboard": [[
-                {"text": "Обнулить доступное", "callback_data": f"fbszero:{nm_id}:yes"},
-                {"text": "Не обнулять", "callback_data": f"fbszero:{nm_id}:skip"},
+                {"text": "Обнулить WB FBS", "callback_data": f"fbszero:{nm_id}:yes"},
+                {"text": "Не обнулять WB FBS", "callback_data": f"fbszero:{nm_id}:skip"},
             ]]
         }
 
@@ -704,7 +684,7 @@ class StockMonitorService:
         return {
             "inline_keyboard": [[
                 {
-                    "text": f"Вернуть {quantity} шт. в доступное",
+                    "text": f"Вернуть {quantity} шт. на WB FBS",
                     "callback_data": f"fbsrestore:{nm_id}:yes",
                 },
                 {
@@ -870,9 +850,8 @@ class StockMonitorService:
                 message_id,
                 original_text,
                 (
-                    "✅ «Доступно для заказа» обнулено. "
-                    "Остаток возвращён на «Мой склад», "
-                    "WB FBS и OZON FBS установлены в 0."
+                    "✅ WB FBS обнулён. "
+                    "«Доступно для заказа», OZON FBS и «Мой склад» не изменены."
                 ),
             )
             return
@@ -955,8 +934,8 @@ class StockMonitorService:
                 message_id,
                 original_text,
                 (
-                    "✅ В «Доступно для заказа» восстановлено "
-                    f"{quantity} шт.; WB/OZON FBS синхронизированы."
+                    f"✅ WB FBS восстановлен до текущего «Доступно для заказа»: {quantity} шт. "
+                    "OZON FBS и локальные остатки не изменены."
                 ),
             )
             return
@@ -1283,7 +1262,7 @@ class StockMonitorService:
                         chat_id,
                         message_id,
                         message_text,
-                        "⏭ Решение: «Доступно для заказа» оставить без изменений.",
+                        "⏭ Решение: WB FBS оставить без изменений.",
                     )
                     return
                 if choice != "yes":
@@ -1304,7 +1283,7 @@ class StockMonitorService:
                         chat_id,
                         message_id,
                         message_text,
-                        "⏭ Решение: сохранённое количество в «Доступно для заказа» не возвращать.",
+                        "⏭ Решение: WB FBS не восстанавливать.",
                     )
                     return
                 if choice != "yes":
