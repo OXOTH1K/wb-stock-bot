@@ -241,7 +241,10 @@ class StockMonitorService:
                 or wb_qty <= 0
                 or (
                     shared_inventory is not None
-                    and shared_inventory.is_suppressed("wb", sku)
+                    and (
+                        shared_inventory.is_suppressed("wb", sku)
+                        or shared_inventory.is_suppressed("ozon", sku)
+                    )
                 )
             ):
                 self.db.delete_pending_alert(alert_key)
@@ -271,11 +274,19 @@ class StockMonitorService:
                 self.db.delete_pending_alert(alert_key)
                 return
             sku = product.vendor_code or f"WB-{nm_id}"
+            wb_reason = self.db.get_channel_suppression_reason(
+                "wb", sku
+            )
+            any_shared_suppression = (
+                shared_inventory is not None
+                and (
+                    self.db.is_channel_suppressed("wb", sku)
+                    or self.db.is_channel_suppressed("ozon", sku)
+                )
+            )
             if (
                 shared_inventory is not None
-                and self.db.get_channel_suppression_reason(
-                    "wb", sku
-                ) == "marketplace_stock"
+                and wb_reason == "marketplace_stock"
             ):
                 local_qty = shared_inventory.local_quantity(sku)
                 restore_qty = int(
@@ -301,6 +312,9 @@ class StockMonitorService:
                 keyboard = self._saved_restore_keyboard(
                     nm_id, restore_qty
                 )
+            elif any_shared_suppression:
+                self.db.delete_pending_alert(alert_key)
+                return
             else:
                 saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
                 saved_total = sum(saved.values())
@@ -1405,11 +1419,21 @@ class StockMonitorService:
 
             if fbs_qty == 0 and wb_qty == 0:
                 sku = product.vendor_code or f"WB-{nm_id}"
+                wb_reason = (
+                    self.db.get_channel_suppression_reason(
+                        "wb", sku
+                    )
+                )
+                any_shared_suppression = (
+                    self.shared_inventory is not None
+                    and (
+                        self.db.is_channel_suppressed("wb", sku)
+                        or self.db.is_channel_suppressed("ozon", sku)
+                    )
+                )
                 shared_suppressed = (
                     self.shared_inventory is not None
-                    and self.db.get_channel_suppression_reason(
-                        "wb", sku
-                    ) == "marketplace_stock"
+                    and wb_reason == "marketplace_stock"
                 )
                 local_qty = (
                     self.shared_inventory.local_quantity(sku)
@@ -1432,6 +1456,8 @@ class StockMonitorService:
                 ):
                     self.db.clear_channel_suppressed("wb", sku)
                     self.db.clear_saved_product_fbs("wb_auto", nm_id)
+                    continue
+                if any_shared_suppression and not shared_suppressed:
                     continue
 
                 saved = self.db.get_saved_product_fbs(
