@@ -134,25 +134,34 @@ class FakeInventory:
     async def suppress_channel(self, channel, sku, reason):
         sku = str(sku)
         self.suppress_calls.append((channel, sku, reason))
-        before = self.available_quantity(sku)
-        self.snapshots[(channel, sku)] = before
-        self.local[sku] = self.local_quantity(sku) + before
-        self.available[sku] = 0
         self.db.set_channel_suppressed(channel, sku, reason)
-        self.db.set_channel_stock("ozon_fbs", sku, 0)
+        if channel == "ozon":
+            self.db.set_channel_stock("ozon_fbs", sku, 0)
 
     async def restore_channel(self, channel, sku):
         sku = str(sku)
-        quantity = min(
-            int(self.snapshots.get((channel, sku), 0)),
-            self.local_quantity(sku),
-        )
-        self.local[sku] = self.local_quantity(sku) - quantity
-        self.available[sku] = quantity
+        quantity = self.available_quantity(sku)
         self.restore_calls.append((channel, sku, quantity))
         self.db.clear_channel_suppressed(channel, sku)
-        self.db.set_channel_stock("ozon_fbs", sku, quantity)
+        if channel == "ozon":
+            self.db.set_channel_stock(
+                "ozon_fbs", sku, quantity
+            )
         return quantity
+
+    async def sync_sku(
+        self, sku, raise_errors=True, force=False, **kwargs
+    ):
+        sku = str(sku)
+        target = (
+            0
+            if self.db.get_channel_suppression_reason(
+                "ozon", sku
+            )
+            == "marketplace_stock"
+            else self.available_quantity(sku)
+        )
+        self.db.set_channel_stock("ozon_fbs", sku, target)
 
 
 class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -268,6 +277,50 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "ozstock:101:zero",
             str(keyboard),
+        )
+
+    async def test_fbo_zero_action_suppresses_only_ozon_fbs(self):
+        inventory = FakeInventory(
+            self.db,
+            local={"SKU-A": 2, "OZON-ONLY": 0},
+            available={"SKU-A": 5, "OZON-ONLY": 4},
+        )
+        self.ozon.set_shared_inventory(inventory)
+        await self.ozon.refresh_catalog_and_stocks(
+            notify=False
+        )
+        self.client.fbo_stocks["SKU-A"] = 2
+        await self.ozon.refresh_catalog_and_stocks()
+
+        handled = await self.ozon.handle_callback(
+            123,
+            9,
+            "ozstock:101:zero",
+            "alert",
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(
+            inventory.available_quantity("SKU-A"), 5
+        )
+        self.assertEqual(
+            inventory.local_quantity("SKU-A"), 2
+        )
+        self.assertEqual(
+            self.db.get_channel_stock(
+                "ozon_fbs", ("SKU-A",)
+            )["SKU-A"],
+            0,
+        )
+        self.assertEqual(
+            self.db.get_channel_suppression_reason(
+                "ozon", "SKU-A"
+            ),
+            "marketplace_stock",
+        )
+        self.assertIn(
+            "только OZON FBS",
+            self.tg.edits[-1][2],
         )
 
     async def test_total_ozon_depletion_offers_transfer_to_available(self):
