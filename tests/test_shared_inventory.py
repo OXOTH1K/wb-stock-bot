@@ -409,7 +409,7 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.ozon.writes[-1], ("SKU-A", 0))
 
-    async def test_mass_zero_returns_available_to_local_and_restore_moves_it_back(self):
+    async def test_mass_zero_and_restore_leave_full_local_unchanged(self):
         await self.shared.initialize()
         self.db.replace_channel_catalog(
             "ozon",
@@ -424,7 +424,7 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.db.ensure_local_stock("OZON-ONLY", 4)
         self.db.ensure_order_available("OZON-ONLY", 0)
-        self.db.transfer_order_available(
+        self.db.set_order_available(
             "OZON-ONLY", 4, reason="test_bootstrap"
         )
 
@@ -547,7 +547,7 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
             self.shared.available_quantity("SKU-A"), 3
         )
         self.assertEqual(
-            self.shared.local_quantity("SKU-A"), 0
+            self.shared.local_quantity("SKU-A"), 3
         )
         self.assertEqual(self.wb.wb.writes, [])
         self.assertEqual(self.ozon.writes[-1], ("SKU-A", 3))
