@@ -1223,7 +1223,7 @@ class OzonIntegration:
                         message_id,
                         original,
                         (
-                            "✅ OZON FBS обнулён. "
+                            "✅ Только OZON FBS обнулён. "
                             "«Доступно для заказа», WB FBS и «Мой склад» не изменены."
                         ),
                     )
