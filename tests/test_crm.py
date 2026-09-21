@@ -53,10 +53,12 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         data = await response.json()
         by_sku = {row["sku"]: row for row in data["items"]}
 
-        self.assertEqual(by_sku["SKU-A"]["local"], 5)
+        self.assertEqual(by_sku["SKU-A"]["local"], 0)
+        self.assertEqual(by_sku["SKU-A"]["available"], 5)
         self.assertEqual(by_sku["SKU-A"]["wb_fbs"], 5)
         self.assertEqual(by_sku["SKU-A"]["wb_warehouses"], 2)
         self.assertEqual(by_sku["SKU-B"]["local"], 4)
+        self.assertEqual(by_sku["SKU-B"]["available"], 0)
         self.assertTrue(by_sku["SKU-B"]["fbs_suppressed"])
         self.assertIsNone(by_sku["SKU-A"]["ozon_fbs"])
         self.assertIsNone(by_sku["SKU-A"]["ozon_fbo"])
@@ -89,7 +91,8 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(shared["wb_fbs"], 5)
         self.assertEqual(shared["ozon_fbs"], 5)
         self.assertEqual(shared["ozon_fbo"], 8)
-        self.assertEqual(shared["local"], 5)
+        self.assertEqual(shared["local"], 0)
+        self.assertEqual(shared["available"], 5)
         self.assertEqual(shared["drift_channels"], [])
 
         wb_only = by_sku["SKU-B"]
@@ -105,62 +108,89 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(ozon_only["wb_warehouses"])
         self.assertEqual(ozon_only["ozon_fbs"], 4)
         self.assertEqual(ozon_only["ozon_fbo"], 2)
-        self.assertEqual(ozon_only["local"], 4)
+        self.assertEqual(ozon_only["local"], 0)
+        self.assertEqual(ozon_only["available"], 4)
         self.assertEqual(ozon_only["title"], "Ozon Only")
 
+        self.assertEqual(data["totals"]["available"], 9)
         self.assertEqual(data["totals"]["ozon_fbs"], 9)
         self.assertEqual(data["totals"]["ozon_fbo"], 10)
 
-    async def test_inventory_can_be_adjusted_and_is_audited(self):
+    async def test_local_and_available_are_edited_independently(self):
         await self.client.get("/api/inventory")
-
-        response = await self.client.post(
-            "/api/inventory/adjust",
-            json={"sku": "SKU-A", "delta": 2},
-        )
-        self.assertEqual(response.status, 200)
-        self.assertEqual((await response.json())["quantity"], 7)
 
         response = await self.client.post(
             "/api/inventory/set",
-            json={"sku": "SKU-A", "quantity": 3},
+            json={"sku": "SKU-A", "quantity": 6},
         )
         self.assertEqual(response.status, 200)
-        self.assertEqual((await response.json())["quantity"], 3)
-
-        movements = self.db.list_inventory_movements(10)
-        self.assertEqual(movements[0]["sku"], "SKU-A")
-        self.assertEqual(movements[0]["before"], 7)
-        self.assertEqual(movements[0]["after"], 3)
-        self.assertEqual(movements[0]["reason"], "crm_set")
+        self.assertEqual((await response.json())["quantity"], 6)
+        self.assertEqual(
+            self.db.get_order_available(("SKU-A",))["SKU-A"],
+            5,
+        )
 
         response = await self.client.post(
-            "/api/inventory/adjust",
-            json={"sku": "SKU-A", "delta": -99},
+            "/api/inventory/available/set",
+            json={"sku": "SKU-A", "quantity": 8},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["quantity"], 8)
+        self.assertEqual(
+            self.db.get_local_stock(("SKU-A",))["SKU-A"],
+            3,
+        )
+
+        response = await self.client.post(
+            "/api/inventory/available/set",
+            json={"sku": "SKU-A", "quantity": 2},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            self.db.get_local_stock(("SKU-A",))["SKU-A"],
+            9,
+        )
+        self.assertEqual(
+            self.db.get_order_available(("SKU-A",))["SKU-A"],
+            2,
+        )
+
+        response = await self.client.post(
+            "/api/inventory/available/set",
+            json={"sku": "SKU-A", "quantity": 99},
         )
         self.assertEqual(response.status, 400)
 
-    async def test_marketplace_sync_failure_is_returned_to_crm(self):
+    async def test_available_sync_failure_is_returned_to_crm(self):
         await self.client.get("/api/inventory")
+        self.db.set_local_stock("SKU-A", 2, reason="restock")
 
         class FailingInventory:
-            async def set_local_stock(inner_self, sku, quantity, reason="crm"):
-                self.db.set_local_stock(sku, quantity, reason=reason)
+            async def set_available_stock(
+                inner_self, sku, quantity, reason="crm", **kwargs
+            ):
+                self.db.transfer_order_available(
+                    sku, quantity, reason=reason
+                )
                 raise RuntimeError("OZON: write rejected")
 
         self.crm.shared_inventory = FailingInventory()
 
         response = await self.client.post(
-            "/api/inventory/set",
-            json={"sku": "SKU-A", "quantity": 2},
+            "/api/inventory/available/set",
+            json={"sku": "SKU-A", "quantity": 6},
         )
         self.assertEqual(response.status, 502)
         payload = await response.json()
         self.assertIn("синхронизация", payload["error"])
         self.assertIn("OZON: write rejected", payload["error"])
         self.assertEqual(
+            self.db.get_order_available(("SKU-A",))["SKU-A"],
+            6,
+        )
+        self.assertEqual(
             self.db.get_local_stock(("SKU-A",))["SKU-A"],
-            2,
+            1,
         )
 
     async def test_order_routes_are_removed_from_crm(self):
@@ -181,7 +211,9 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         title_pos = INDEX_HTML.index('<div class="title">')
         sku_pos = INDEX_HTML.index('<div class="sku">')
         self.assertLess(title_pos, sku_pos)
-        self.assertIn('title="Сохранить"', INDEX_HTML)
+        self.assertIn('title="Сохранить «Мой склад»"', INDEX_HTML)
+        self.assertIn('title="Сохранить «Доступно для заказа»"', INDEX_HTML)
+        self.assertIn("Доступно для заказа", INDEX_HTML)
         self.assertIn("Склад OZON (FBO)", INDEX_HTML)
 
     async def test_network_allowlist_accepts_lan_and_rejects_other_networks(self):
