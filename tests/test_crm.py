@@ -53,7 +53,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         data = await response.json()
         by_sku = {row["sku"]: row for row in data["items"]}
 
-        self.assertEqual(by_sku["SKU-A"]["local"], 0)
+        self.assertEqual(by_sku["SKU-A"]["local"], 5)
         self.assertEqual(by_sku["SKU-A"]["available"], 5)
         self.assertEqual(by_sku["SKU-A"]["wb_fbs"], 5)
         self.assertEqual(by_sku["SKU-A"]["wb_warehouses"], 2)
@@ -92,7 +92,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(shared["wb_fbs"], 5)
         self.assertEqual(shared["ozon_fbs"], 5)
         self.assertEqual(shared["ozon_fbo"], 8)
-        self.assertEqual(shared["local"], 0)
+        self.assertEqual(shared["local"], 5)
         self.assertEqual(shared["available"], 5)
         self.assertEqual(shared["drift_channels"], [])
 
@@ -109,7 +109,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(ozon_only["wb_warehouses"])
         self.assertEqual(ozon_only["ozon_fbs"], 4)
         self.assertEqual(ozon_only["ozon_fbo"], 2)
-        self.assertEqual(ozon_only["local"], 0)
+        self.assertEqual(ozon_only["local"], 4)
         self.assertEqual(ozon_only["available"], 4)
         self.assertEqual(ozon_only["title"], "Ozon Only")
 
@@ -122,10 +122,10 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
 
         response = await self.client.post(
             "/api/inventory/set",
-            json={"sku": "SKU-A", "quantity": 6},
+            json={"sku": "SKU-A", "quantity": 10},
         )
         self.assertEqual(response.status, 200)
-        self.assertEqual((await response.json())["quantity"], 6)
+        self.assertEqual((await response.json())["quantity"], 10)
         self.assertEqual(
             self.db.get_order_available(("SKU-A",))["SKU-A"],
             5,
@@ -139,7 +139,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await response.json())["quantity"], 8)
         self.assertEqual(
             self.db.get_local_stock(("SKU-A",))["SKU-A"],
-            3,
+            10,
         )
 
         response = await self.client.post(
@@ -149,7 +149,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(
             self.db.get_local_stock(("SKU-A",))["SKU-A"],
-            9,
+            10,
         )
         self.assertEqual(
             self.db.get_order_available(("SKU-A",))["SKU-A"],
@@ -158,19 +158,19 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
 
         response = await self.client.post(
             "/api/inventory/available/set",
-            json={"sku": "SKU-A", "quantity": 99},
+            json={"sku": "SKU-A", "quantity": 11},
         )
         self.assertEqual(response.status, 400)
 
     async def test_available_sync_failure_is_returned_to_crm(self):
         await self.client.get("/api/inventory")
-        self.db.set_local_stock("SKU-A", 2, reason="restock")
+        self.db.set_local_stock("SKU-A", 7, reason="restock")
 
         class FailingInventory:
             async def set_available_stock(
                 inner_self, sku, quantity, reason="crm", **kwargs
             ):
-                self.db.transfer_order_available(
+                self.db.set_order_available(
                     sku, quantity, reason=reason
                 )
                 raise RuntimeError("OZON: write rejected")
@@ -191,7 +191,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             self.db.get_local_stock(("SKU-A",))["SKU-A"],
-            1,
+            7,
         )
 
     async def test_order_routes_are_removed_from_crm(self):
