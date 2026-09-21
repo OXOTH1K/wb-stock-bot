@@ -303,7 +303,9 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_depletion_add_button_sets_shared_available_stock(self):
         inventory = FakeInventory(
-            self.db, {"SKU-A": 0, "OZON-ONLY": 4}
+            self.db,
+            local={"SKU-A": 5, "OZON-ONLY": 0},
+            available={"SKU-A": 0, "OZON-ONLY": 4},
         )
         self.ozon.set_shared_inventory(inventory)
         await self.ozon.refresh_catalog_and_stocks(
