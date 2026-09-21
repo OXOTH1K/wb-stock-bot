@@ -76,10 +76,10 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
         await self.shared.initialize()
 
         self.assertEqual(
-            self.shared.local_quantity("SKU-A"), 3
+            self.shared.local_quantity("SKU-A"), 0
         )
         self.assertEqual(
-            self.shared.available_quantity("SKU-A"), 0
+            self.shared.available_quantity("SKU-A"), 3
         )
         self.assertTrue(
             self.shared.is_suppressed("wb", "SKU-A")
@@ -87,6 +87,39 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.db.get_channel_suppression_reason(
                 "wb", "SKU-A"
+            ),
+            "marketplace_stock",
+        )
+
+    async def test_migrates_pr27_shared_zero_back_to_platform_suppression(self):
+        self.wb.fbs_stock[100] = 0
+        self.db.replace_channel_stock(
+            "ozon_fbs", {"SKU-A": 0}
+        )
+        self.db.ensure_local_stock("SKU-A", 3)
+        self.db.ensure_order_available("SKU-A", 0)
+        self.db.set_channel_suppressed(
+            "ozon", "SKU-A", "marketplace_stock"
+        )
+        self.db.save_available_snapshot(
+            "marketplace:ozon", "SKU-A", 3
+        )
+
+        await self.shared.initialize()
+
+        self.assertEqual(
+            self.shared.available_quantity("SKU-A"), 3
+        )
+        self.assertEqual(
+            self.shared.local_quantity("SKU-A"), 0
+        )
+        self.assertEqual(
+            self.wb.wb.writes[-1], (7, {11: 3})
+        )
+        self.assertEqual(self.ozon.writes[-1], ("SKU-A", 0))
+        self.assertEqual(
+            self.db.get_channel_suppression_reason(
+                "ozon", "SKU-A"
             ),
             "marketplace_stock",
         )
