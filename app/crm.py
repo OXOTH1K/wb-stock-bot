@@ -248,11 +248,13 @@ class CRMServer:
             drift_channels: list[str] = []
             if (
                 wb_fbs is not None
+                and not fbs_suppressed
                 and wb_fbs != available_qty
             ):
                 drift_channels.append("WB")
             if (
                 ozon_fbs is not None
+                and not ozon_fbs_suppressed
                 and ozon_fbs != available_qty
             ):
                 drift_channels.append("OZON")
