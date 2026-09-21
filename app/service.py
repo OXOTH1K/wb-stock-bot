@@ -278,21 +278,28 @@ class StockMonitorService:
                 ) == "marketplace_stock"
             ):
                 local_qty = shared_inventory.local_quantity(sku)
-                if local_qty <= 0:
+                restore_qty = int(
+                    self.db.get_available_snapshot(
+                        "marketplace:wb"
+                    ).get(sku, 0)
+                )
+                if restore_qty <= 0 or local_qty <= 0:
                     self.db.clear_channel_suppressed("wb", sku)
                     self.db.clear_saved_product_fbs("wb_auto", nm_id)
                     self.db.delete_pending_alert(alert_key)
                     return
+                restore_qty = min(restore_qty, local_qty)
                 text = (
                     "🔴 Товар закончился на складе WB\n"
                     f"Артикул продавца: {product.vendor_code or '—'}\n"
-                    "WB FBS сейчас намеренно равен 0.\n"
+                    "Доступно для заказа: 0 шт.\n"
                     "На складах WB: 0 шт.\n\n"
-                    f"Актуальный остаток основного склада: {local_qty} шт.\n"
-                    "Вернуть этот актуальный остаток на WB FBS?"
+                    f"Мой склад: {local_qty} шт.\n"
+                    f"До обнуления было доступно: {restore_qty} шт.\n"
+                    "Вернуть это количество в «Доступно для заказа» и оба FBS?"
                 )
                 keyboard = self._saved_restore_keyboard(
-                    nm_id, local_qty
+                    nm_id, restore_qty
                 )
             else:
                 saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
@@ -308,12 +315,18 @@ class StockMonitorService:
                     )
                     keyboard = self._saved_restore_keyboard(nm_id, saved_total)
                 else:
+                    local_qty = (
+                        shared_inventory.local_quantity(sku)
+                        if shared_inventory is not None
+                        else 0
+                    )
                     text = (
-                        "🔴 Товар закончился везде\n"
+                        "🔴 Товар закончился в доступном пуле и на WB\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        "На вашем складе: 0 шт. (основной склад)\n"
+                        "Доступно для заказа: 0 шт.\n"
+                        f"Мой склад: {local_qty} шт.\n"
                         "На складах WB: 0 шт.\n\n"
-                        "Добавить остаток на основной склад?"
+                        "Перенести 1 или 5 шт. из «Моего склада» в «Доступно для заказа»?"
                     )
                     keyboard = self._depletion_action_keyboard(nm_id)
         else:
@@ -666,8 +679,8 @@ class StockMonitorService:
     def _wb_appearance_action_keyboard(self, nm_id: int) -> dict:
         return {
             "inline_keyboard": [[
-                {"text": "Обнулить FBS", "callback_data": f"fbszero:{nm_id}:yes"},
-                {"text": "Не обнулять FBS", "callback_data": f"fbszero:{nm_id}:skip"},
+                {"text": "Обнулить доступное", "callback_data": f"fbszero:{nm_id}:yes"},
+                {"text": "Не обнулять", "callback_data": f"fbszero:{nm_id}:skip"},
             ]]
         }
 
@@ -675,7 +688,7 @@ class StockMonitorService:
         return {
             "inline_keyboard": [[
                 {
-                    "text": f"Вернуть {quantity} шт. на FBS",
+                    "text": f"Вернуть {quantity} шт. в доступное",
                     "callback_data": f"fbsrestore:{nm_id}:yes",
                 },
                 {
@@ -1126,7 +1139,7 @@ class StockMonitorService:
                         "skip",
                     )
                     await self._finish_action_message(
-                        chat_id, message_id, message_text, "⏭ Решение: не добавлять на FBS."
+                        chat_id, message_id, message_text, "⏭ Решение: не переносить товар в «Доступно для заказа»."
                     )
                     return
                 if choice not in {"1", "5"}:
@@ -1149,7 +1162,7 @@ class StockMonitorService:
                         chat_id,
                         message_id,
                         message_text,
-                        "⏭ Решение: FBS оставить без изменений.",
+                        "⏭ Решение: «Доступно для заказа» оставить без изменений.",
                     )
                     return
                 if choice != "yes":
@@ -1170,7 +1183,7 @@ class StockMonitorService:
                         chat_id,
                         message_id,
                         message_text,
-                        "⏭ Решение: сохранённый остаток на FBS не возвращать.",
+                        "⏭ Решение: сохранённое количество в «Доступно для заказа» не возвращать.",
                     )
                     return
                 if choice != "yes":
@@ -1298,7 +1311,20 @@ class StockMonitorService:
                     if self.shared_inventory is not None
                     else 0
                 )
-                if shared_suppressed and local_qty <= 0:
+                available_qty = (
+                    self.shared_inventory.available_quantity(sku)
+                    if self.shared_inventory is not None
+                    else fbs_qty
+                )
+                restore_snapshot = int(
+                    self.db.get_available_snapshot(
+                        "marketplace:wb"
+                    ).get(sku, 0)
+                )
+                if (
+                    shared_suppressed
+                    and (local_qty <= 0 or restore_snapshot <= 0)
+                ):
                     self.db.clear_channel_suppressed("wb", sku)
                     self.db.clear_saved_product_fbs("wb_auto", nm_id)
                     continue
@@ -1308,7 +1334,7 @@ class StockMonitorService:
                 )
                 saved_total = sum(saved.values())
                 restore_qty = (
-                    local_qty
+                    min(local_qty, restore_snapshot)
                     if shared_suppressed
                     else saved_total
                 )
@@ -1328,7 +1354,8 @@ class StockMonitorService:
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
                         "WB FBS: 0 шт. | склад WB: 0 шт.\n\n"
                         + (
-                            f"Актуальный основной склад: {restore_qty} шт.\n"
+                            f"Мой склад: {local_qty} шт.\n"
+                            f"Сохранено до обнуления: {restore_qty} шт.\n"
                             if shared_suppressed
                             else f"Сохранённый FBS-остаток: {restore_qty} шт.\n"
                         )
@@ -1341,8 +1368,9 @@ class StockMonitorService:
                     text = (
                         "🔎 /status: товар закончился везде\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        "Основной склад: 0 шт. | WB: 0 шт.\n\n"
-                        "Добавить остаток на основной склад?"
+                        f"Мой склад: {local_qty} шт. | Доступно для заказа: {available_qty} шт.\n"
+                        "WB: 0 шт.\n\n"
+                        "Перенести 1 или 5 шт. в «Доступно для заказа»?"
                     )
                     keyboard = self._depletion_action_keyboard(nm_id)
                 await self.tg.send_message(
