@@ -198,7 +198,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(service.tg.messages), 1)
         text = service.tg.messages[0][1]
         self.assertIn("Товар появился на складе WB", text)
-        self.assertIn("На вашем складе: 3 шт.", text)
+        self.assertIn("Доступно для заказа: 3 шт.", text)
         self.assertIn("было 0 шт. → стало 4 шт.", text)
         self.assertNotIn("Артикул WB", text)
 
@@ -233,8 +233,8 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         await service._notify_total_depletions()
         self.assertEqual(len(service.tg.messages), 1)
         text = service.tg.messages[0][1]
-        self.assertIn("Товар закончился везде", text)
-        self.assertIn("На вашем складе: 0 шт.", text)
+        self.assertIn("Товар закончился в доступном пуле и на WB", text)
+        self.assertIn("Доступно для заказа: 0 шт.", text)
         self.assertIn("На складах WB: 0 шт.", text)
 
     async def test_total_depletion_first_combined_snapshot_is_baseline(self):
@@ -305,7 +305,7 @@ class StockActionTests(unittest.IsolatedAsyncioTestCase):
         )
         buttons = service._wb_appearance_action_keyboard(100)["inline_keyboard"][0]
         self.assertEqual(
-            [b["text"] for b in buttons], ["Обнулить FBS", "Не обнулять FBS"]
+            [b["text"] for b in buttons], ["Обнулить доступное", "Не обнулять"]
         )
 
     async def test_add_five_sets_single_variant_fbs_to_five(self):
@@ -366,7 +366,7 @@ class StockActionTests(unittest.IsolatedAsyncioTestCase):
         )
         await service.handle_callback(123, 9, "fbsadd:100:skip", "alert")
         self.assertEqual(wb.updates, [])
-        self.assertIn("не добавлять", tg.edits[-1][2])
+        self.assertIn("не переносить", tg.edits[-1][2])
 
 
 if __name__ == "__main__":

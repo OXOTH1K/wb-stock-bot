@@ -27,7 +27,7 @@ INDEX_HTML = r"""<!doctype html>
     .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
     .card .n{font-size:24px;font-weight:700}.card .l{color:var(--muted);margin-top:3px}
     .table-wrap{overflow:visible}
-    table{width:100%;border-collapse:separate;border-spacing:0;min-width:1080px}
+    table{width:100%;border-collapse:separate;border-spacing:0;min-width:1220px}
     th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
     th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);background:#fafafa;position:sticky;top:0;z-index:5;box-shadow:0 1px 0 var(--line)}
     tr:last-child td{border-bottom:0}.title{font-weight:700}.sku{color:var(--muted);font-size:12px;margin-top:2px}
@@ -54,7 +54,7 @@ INDEX_HTML = r"""<!doctype html>
     <div id="inventoryCards" class="cards"></div>
     <div class="panel">
       <div class="panel-head">
-        <div><h2>Остатки товаров</h2><div class="sub">Локальный склад можно редактировать вручную</div></div>
+        <div><h2>Остатки товаров</h2><div class="sub">«Мой склад» и «Доступно для заказа» редактируются отдельно; изменение доступного перемещает товар между этими пулами</div></div>
         <input id="inventorySearch" class="search" placeholder="Поиск по артикулу или названию">
       </div>
       <div id="inventoryBody" class="spinner">Загрузка…</div>
@@ -83,7 +83,8 @@ async function loadInventory() {
     inventoryRows = data.items;
     const totals = data.totals;
     document.getElementById('inventoryCards').innerHTML = [
-      ['Локальный склад', totals.local],
+      ['Мой склад', totals.local],
+      ['Доступно для заказа', totals.available],
       ['WB FBS', totals.wb_fbs],
       ['OZON FBS', totals.ozon_fbs],
       ['На складах WB', totals.wb_warehouses],
@@ -97,13 +98,11 @@ function renderInventory() {
   const q = document.getElementById('inventorySearch').value.trim().toLowerCase();
   const rows = inventoryRows.filter(x => !q || x.sku.toLowerCase().includes(q) || x.title.toLowerCase().includes(q));
   if (!rows.length) { document.getElementById('inventoryBody').innerHTML='<div class="empty">Ничего не найдено</div>'; return; }
-  let html = '<div class="table-wrap"><table><thead><tr><th>Товар</th><th>Локальный склад</th><th>WB FBS</th><th>Склады WB</th><th>OZON FBS</th><th>Склад OZON (FBO)</th><th>Состояние</th></tr></thead><tbody>';
+  let html = '<div class="table-wrap"><table><thead><tr><th>Товар</th><th>Мой склад</th><th>Доступно для заказа</th><th>WB FBS</th><th>Склады WB</th><th>OZON FBS</th><th>Склад OZON (FBO)</th><th>Состояние</th></tr></thead><tbody>';
   for (const x of rows) {
     const badges = [];
-    if (x.fbs_suppressed) badges.push('<span class="badge warn">WB FBS намеренно 0</span>');
-    if (x.ozon_fbs_suppressed) badges.push('<span class="badge warn">OZON FBS намеренно 0</span>');
     for (const channel of (x.drift_channels || [])) {
-      badges.push('<span class="badge bad">'+esc(channel)+' ≠ локал</span>');
+      badges.push('<span class="badge bad">'+esc(channel)+' ≠ доступно</span>');
     }
     if (!badges.length) badges.push('<span class="badge ok">синхронно</span>');
     const state = badges.join(' ');
@@ -111,7 +110,10 @@ function renderInventory() {
     html += '<tr><td><div class="title">'+esc(x.title||'Без названия')+'</div><div class="sku">'+esc(x.sku)+'</div></td>'+
       '<td><div class="stock-edit">'+
       '<input id="qty-'+x.key+'" type="number" min="0" value="'+esc(x.local)+'">'+
-      '<button class="mini" title="Сохранить" onclick="setStock(decodeURIComponent(\''+encodedSku+'\'),\''+x.key+'\')">✓</button></div></td>'+
+      '<button class="mini" title="Сохранить «Мой склад»" onclick="setStock(decodeURIComponent(\''+encodedSku+'\'),\''+x.key+'\')">✓</button></div></td>'+
+      '<td><div class="stock-edit">'+
+      '<input id="available-'+x.key+'" type="number" min="0" value="'+esc(x.available)+'">'+
+      '<button class="mini" title="Сохранить «Доступно для заказа»" onclick="setAvailable(decodeURIComponent(\''+encodedSku+'\'),\''+x.key+'\')">✓</button></div></td>'+
       '<td>'+(x.wb_fbs === null ? '<span class="muted">—</span>' : '<span class="qty">'+esc(x.wb_fbs)+'</span>')+'</td>'+
       '<td>'+(x.wb_warehouses === null ? '<span class="muted">—</span>' : '<span class="qty">'+esc(x.wb_warehouses)+'</span>')+'</td>'+
       '<td>'+(x.ozon_fbs === null ? '<span class="muted">—</span>' : '<span class="qty">'+esc(x.ozon_fbs)+'</span>')+'</td>'+
@@ -125,6 +127,12 @@ async function setStock(sku, key) {
   const el = document.getElementById('qty-'+key);
   const quantity = Number(el.value);
   try { await api('/api/inventory/set',{method:'POST',body:JSON.stringify({sku,quantity})}); await loadInventory(); }
+  catch(e){ alert(e.message); }
+}
+async function setAvailable(sku, key) {
+  const el = document.getElementById('available-'+key);
+  const quantity = Number(el.value);
+  try { await api('/api/inventory/available/set',{method:'POST',body:JSON.stringify({sku,quantity})}); await loadInventory(); }
   catch(e){ alert(e.message); }
 }
 

@@ -241,7 +241,10 @@ class StockMonitorService:
                 or wb_qty <= 0
                 or (
                     shared_inventory is not None
-                    and shared_inventory.is_suppressed("wb", sku)
+                    and (
+                        shared_inventory.is_suppressed("wb", sku)
+                        or shared_inventory.is_suppressed("ozon", sku)
+                    )
                 )
             ):
                 self.db.delete_pending_alert(alert_key)
@@ -249,15 +252,21 @@ class StockMonitorService:
             local_qty = (
                 shared_inventory.local_quantity(sku)
                 if shared_inventory is not None
+                else 0
+            )
+            available_qty = (
+                shared_inventory.available_quantity(sku)
+                if shared_inventory is not None
                 else fbs_qty
             )
             text = (
                 "🟢 Товар появился на складе WB\n"
                 f"Артикул продавца: {product.vendor_code or '—'}\n"
-                f"На вашем складе: {local_qty} шт. (основной склад)\n"
+                f"Мой склад: {local_qty} шт.\n"
+                f"Доступно для заказа: {available_qty} шт.\n"
                 f"На складах WB: было {old_qty} шт. → стало {wb_qty} шт.\n\n"
-                "Обнулить только WB FBS? "
-                "OZON FBS останется равным основному складу."
+                "Обнулить «Доступно для заказа»? "
+                "Тогда WB FBS и OZON FBS станут 0, а товар вернётся на «Мой склад»."
             )
             keyboard = self._wb_appearance_action_keyboard(nm_id)
         elif alert_type == "depletion":
@@ -265,29 +274,49 @@ class StockMonitorService:
                 self.db.delete_pending_alert(alert_key)
                 return
             sku = product.vendor_code or f"WB-{nm_id}"
+            wb_reason = (
+                self.db.get_channel_suppression_reason("wb", sku)
+                if shared_inventory is not None
+                else None
+            )
+            any_shared_suppression = (
+                shared_inventory is not None
+                and (
+                    self.db.is_channel_suppressed("wb", sku)
+                    or self.db.is_channel_suppressed("ozon", sku)
+                )
+            )
             if (
                 shared_inventory is not None
-                and self.db.get_channel_suppression_reason(
-                    "wb", sku
-                ) == "marketplace_stock"
+                and wb_reason == "marketplace_stock"
             ):
                 local_qty = shared_inventory.local_quantity(sku)
-                if local_qty <= 0:
+                restore_qty = int(
+                    self.db.get_available_snapshot(
+                        "marketplace:wb"
+                    ).get(sku, 0)
+                )
+                if restore_qty <= 0 or local_qty <= 0:
                     self.db.clear_channel_suppressed("wb", sku)
                     self.db.clear_saved_product_fbs("wb_auto", nm_id)
                     self.db.delete_pending_alert(alert_key)
                     return
+                restore_qty = min(restore_qty, local_qty)
                 text = (
                     "🔴 Товар закончился на складе WB\n"
                     f"Артикул продавца: {product.vendor_code or '—'}\n"
-                    "WB FBS сейчас намеренно равен 0.\n"
+                    "Доступно для заказа: 0 шт.\n"
                     "На складах WB: 0 шт.\n\n"
-                    f"Актуальный остаток основного склада: {local_qty} шт.\n"
-                    "Вернуть этот актуальный остаток на WB FBS?"
+                    f"Мой склад: {local_qty} шт.\n"
+                    f"До обнуления было доступно: {restore_qty} шт.\n"
+                    "Вернуть это количество в «Доступно для заказа» и оба FBS?"
                 )
                 keyboard = self._saved_restore_keyboard(
-                    nm_id, local_qty
+                    nm_id, restore_qty
                 )
+            elif any_shared_suppression:
+                self.db.delete_pending_alert(alert_key)
+                return
             else:
                 saved = self.db.get_saved_product_fbs("wb_auto", nm_id)
                 saved_total = sum(saved.values())
@@ -302,12 +331,18 @@ class StockMonitorService:
                     )
                     keyboard = self._saved_restore_keyboard(nm_id, saved_total)
                 else:
+                    local_qty = (
+                        shared_inventory.local_quantity(sku)
+                        if shared_inventory is not None
+                        else 0
+                    )
                     text = (
-                        "🔴 Товар закончился везде\n"
+                        "🔴 Товар закончился в доступном пуле и на WB\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        "На вашем складе: 0 шт. (основной склад)\n"
+                        "Доступно для заказа: 0 шт.\n"
+                        f"Мой склад: {local_qty} шт.\n"
                         "На складах WB: 0 шт.\n\n"
-                        "Добавить остаток на основной склад?"
+                        "Перенести 1 или 5 шт. из «Моего склада» в «Доступно для заказа»?"
                     )
                     keyboard = self._depletion_action_keyboard(nm_id)
         else:
@@ -413,6 +448,7 @@ class StockMonitorService:
                     "/stocks_ozon — остатки OZON FBS + FBO\n"
                     "/stocks_ozon 2 — открыть страницу OZON\n"
                     "/stock <артикул продавца> — найти товар\n"
+                    "/set <артикул> <количество> — установить «Доступно для заказа»\n"
                     "/zero — товары с нулевым остатком\n"
                     "/fbs_zero_all — сохранить и обнулить весь FBS\n"
                     "/fbs_restore — восстановить WB FBS\n"
@@ -469,11 +505,73 @@ class StockMonitorService:
                     return
                 await self.refresh_for_command()
                 await self.tg.send_message(chat_id, self._format_search(" ".join(args)))
+            elif command == "/set":
+                if len(args) < 2:
+                    await self.tg.send_message(
+                        chat_id,
+                        "Формат: /set <артикул продавца> <количество>",
+                    )
+                    return
+                if self.shared_inventory is None:
+                    raise RuntimeError("Общий склад не инициализирован")
+                sku = " ".join(args[:-1]).strip()
+                try:
+                    quantity = int(args[-1])
+                except ValueError:
+                    await self.tg.send_message(
+                        chat_id,
+                        "Количество должно быть целым числом.",
+                    )
+                    return
+                if quantity < 0:
+                    await self.tg.send_message(
+                        chat_id,
+                        "Количество не может быть отрицательным.",
+                    )
+                    return
+                if sku not in self.shared_inventory.all_skus():
+                    await self.tg.send_message(
+                        chat_id,
+                        f"Товар с артикулом «{sku}» не найден.",
+                    )
+                    return
+                before_available = (
+                    self.shared_inventory.available_quantity(sku)
+                )
+                before_local = self.shared_inventory.local_quantity(sku)
+                available = (
+                    await self.shared_inventory.set_available_stock(
+                        sku,
+                        quantity,
+                        reason="telegram_set",
+                    )
+                )
+                local = self.shared_inventory.local_quantity(sku)
+                delta = available - before_available
+                direction = (
+                    f"перенесено из «Моего склада»: {delta} шт."
+                    if delta > 0
+                    else (
+                        f"возвращено на «Мой склад»: {-delta} шт."
+                        if delta < 0
+                        else "количество не изменилось."
+                    )
+                )
+                await self.tg.send_message(
+                    chat_id,
+                    (
+                        f"✅ {sku}\n"
+                        f"Доступно для заказа: {available} шт.\n"
+                        f"Мой склад: {before_local} → {local} шт.\n"
+                        f"{direction}\n"
+                        "WB FBS и OZON FBS синхронизированы."
+                    ),
+                )
             elif command == "/fbs_zero_all":
                 await self.tg.send_message(
                     chat_id,
-                    "⚠️ Обнулить остатки ВСЕХ товаров на FBS?\n"
-                    "Перед обнулением текущие количества будут сохранены.",
+                    "⚠️ Обнулить «Доступно для заказа» у ВСЕХ товаров?\n"
+                    "Количество вернётся на «Мой склад», а WB/OZON FBS станут 0.",
                     reply_markup={
                         "inline_keyboard": [[
                             {"text": "Обнулить весь FBS", "callback_data": "fbsallzero:yes"},
@@ -482,21 +580,26 @@ class StockMonitorService:
                     },
                 )
             elif command == "/fbs_restore":
-                saved = self.db.get_saved_fbs("mass")
+                saved = self.db.get_available_snapshot(
+                    "mass_shared"
+                )
                 saved_total = sum(saved.values())
                 if not saved:
-                    await self.tg.send_message(chat_id, "ℹ️ Сохранённого массового снимка FBS нет.")
+                    await self.tg.send_message(
+                        chat_id,
+                        "ℹ️ Сохранённого массового значения «Доступно для заказа» нет.",
+                    )
                 else:
                     await self.tg.send_message(
                         chat_id,
                         (
-                            f"♻️ В сохранённом снимке: {len(saved)} вариантов, "
-                            f"суммарно {saved_total} шт.\n"
-                            "Восстановить эти остатки на FBS?"
+                            f"♻️ Восстановить «Доступно для заказа»: "
+                            f"{len(saved)} товаров, суммарно {saved_total} шт.?\n"
+                            "Количество будет перенесено с «Моего склада» и опубликовано в WB/OZON FBS."
                         ),
                         reply_markup={
                             "inline_keyboard": [[
-                                {"text": "Восстановить FBS", "callback_data": "fbsallrestore:yes"},
+                                {"text": "Восстановить", "callback_data": "fbsallrestore:yes"},
                                 {"text": "Отмена", "callback_data": "fbsallrestore:skip"},
                             ]]
                         },
@@ -508,7 +611,7 @@ class StockMonitorService:
                     chat_id,
                     (
                         "Команды: /stocks_wb, /stocks_ozon, "
-                        "/stock <артикул продавца>, /zero, "
+                        "/stock <артикул продавца>, /set <артикул> <количество>, /zero, "
                         "/fbs_zero_all, /fbs_restore, "
                         "/ozon_fbs_zero_all, /ozon_fbs_restore, "
                         "/status, /id"
@@ -592,8 +695,8 @@ class StockMonitorService:
     def _wb_appearance_action_keyboard(self, nm_id: int) -> dict:
         return {
             "inline_keyboard": [[
-                {"text": "Обнулить FBS", "callback_data": f"fbszero:{nm_id}:yes"},
-                {"text": "Не обнулять FBS", "callback_data": f"fbszero:{nm_id}:skip"},
+                {"text": "Обнулить доступное", "callback_data": f"fbszero:{nm_id}:yes"},
+                {"text": "Не обнулять", "callback_data": f"fbszero:{nm_id}:skip"},
             ]]
         }
 
@@ -601,7 +704,7 @@ class StockMonitorService:
         return {
             "inline_keyboard": [[
                 {
-                    "text": f"Вернуть {quantity} шт. на FBS",
+                    "text": f"Вернуть {quantity} шт. в доступное",
                     "callback_data": f"fbsrestore:{nm_id}:yes",
                 },
                 {
@@ -681,7 +784,7 @@ class StockMonitorService:
 
         sku = product.vendor_code or f"WB-{nm_id}"
         if self.shared_inventory is not None:
-            await self.shared_inventory.set_local_stock(
+            await self.shared_inventory.set_available_stock(
                 sku,
                 quantity,
                 reason="telegram_stock_add",
@@ -691,8 +794,8 @@ class StockMonitorService:
                 message_id,
                 original_text,
                 (
-                    f"✅ Основной склад установлен в {quantity} шт. "
-                    "WB/OZON FBS синхронизируются по общему остатку."
+                    f"✅ «Доступно для заказа» установлено в {quantity} шт. "
+                    "Товар перенесён с «Моего склада», WB/OZON FBS синхронизированы."
                 ),
             )
             return
@@ -767,8 +870,9 @@ class StockMonitorService:
                 message_id,
                 original_text,
                 (
-                    "✅ WB FBS обнулён. Основной склад и OZON FBS "
-                    "остались без изменений."
+                    "✅ «Доступно для заказа» обнулено. "
+                    "Остаток возвращён на «Мой склад», "
+                    "WB FBS и OZON FBS установлены в 0."
                 ),
             )
             return
@@ -851,8 +955,8 @@ class StockMonitorService:
                 message_id,
                 original_text,
                 (
-                    "✅ На WB FBS возвращён актуальный остаток "
-                    f"основного склада: {quantity} шт."
+                    "✅ В «Доступно для заказа» восстановлено "
+                    f"{quantity} шт.; WB/OZON FBS синхронизированы."
                 ),
             )
             return
@@ -898,6 +1002,23 @@ class StockMonitorService:
         message_id: int,
         original_text: str,
     ) -> None:
+        if self.shared_inventory is not None:
+            count, total = (
+                await self.shared_inventory.suppress_wb_mass()
+            )
+            await self.refresh_fbs(notify=False)
+            await self._finish_action_message(
+                chat_id,
+                message_id,
+                original_text,
+                (
+                    "✅ «Доступно для заказа» обнулено для всех товаров.\n"
+                    "Остаток возвращён на «Мой склад», WB/OZON FBS синхронизированы в 0.\n"
+                    f"Товаров: {count}, возвращено: {total} шт."
+                ),
+            )
+            return
+
         if self.warehouse is None:
             raise RuntimeError("Склад продавца не определён")
         chrt_to_nm = {size.chrt_id: size.nm_id for size in self.sizes}
@@ -964,6 +1085,31 @@ class StockMonitorService:
         message_id: int,
         original_text: str,
     ) -> None:
+        if self.shared_inventory is not None:
+            restored, total = (
+                await self.shared_inventory.restore_wb_mass()
+            )
+            if restored == 0:
+                await self._finish_action_message(
+                    chat_id,
+                    message_id,
+                    original_text,
+                    "ℹ️ Сохранённого массового значения «Доступно для заказа» нет.",
+                )
+                return
+            await self.refresh_fbs(notify=False)
+            await self._finish_action_message(
+                chat_id,
+                message_id,
+                original_text,
+                (
+                    "✅ «Доступно для заказа» восстановлено из сохранённого значения.\n"
+                    "Товар снова перенесён с «Моего склада», WB/OZON FBS синхронизированы.\n"
+                    f"Товаров: {restored}, суммарно: {total} шт."
+                ),
+            )
+            return
+
         if self.warehouse is None:
             raise RuntimeError("Склад продавца не определён")
 
@@ -1114,7 +1260,7 @@ class StockMonitorService:
                         "skip",
                     )
                     await self._finish_action_message(
-                        chat_id, message_id, message_text, "⏭ Решение: не добавлять на FBS."
+                        chat_id, message_id, message_text, "⏭ Решение: не переносить товар в «Доступно для заказа»."
                     )
                     return
                 if choice not in {"1", "5"}:
@@ -1137,7 +1283,7 @@ class StockMonitorService:
                         chat_id,
                         message_id,
                         message_text,
-                        "⏭ Решение: FBS оставить без изменений.",
+                        "⏭ Решение: «Доступно для заказа» оставить без изменений.",
                     )
                     return
                 if choice != "yes":
@@ -1158,7 +1304,7 @@ class StockMonitorService:
                         chat_id,
                         message_id,
                         message_text,
-                        "⏭ Решение: сохранённый остаток на FBS не возвращать.",
+                        "⏭ Решение: сохранённое количество в «Доступно для заказа» не возвращать.",
                     )
                     return
                 if choice != "yes":
@@ -1275,20 +1421,45 @@ class StockMonitorService:
 
             if fbs_qty == 0 and wb_qty == 0:
                 sku = product.vendor_code or f"WB-{nm_id}"
+                wb_reason = (
+                    self.db.get_channel_suppression_reason(
+                        "wb", sku
+                    )
+                )
+                any_shared_suppression = (
+                    self.shared_inventory is not None
+                    and (
+                        self.db.is_channel_suppressed("wb", sku)
+                        or self.db.is_channel_suppressed("ozon", sku)
+                    )
+                )
                 shared_suppressed = (
                     self.shared_inventory is not None
-                    and self.db.get_channel_suppression_reason(
-                        "wb", sku
-                    ) == "marketplace_stock"
+                    and wb_reason == "marketplace_stock"
                 )
                 local_qty = (
                     self.shared_inventory.local_quantity(sku)
                     if self.shared_inventory is not None
                     else 0
                 )
-                if shared_suppressed and local_qty <= 0:
+                available_qty = (
+                    self.shared_inventory.available_quantity(sku)
+                    if self.shared_inventory is not None
+                    else fbs_qty
+                )
+                restore_snapshot = int(
+                    self.db.get_available_snapshot(
+                        "marketplace:wb"
+                    ).get(sku, 0)
+                )
+                if (
+                    shared_suppressed
+                    and (local_qty <= 0 or restore_snapshot <= 0)
+                ):
                     self.db.clear_channel_suppressed("wb", sku)
                     self.db.clear_saved_product_fbs("wb_auto", nm_id)
+                    continue
+                if any_shared_suppression and not shared_suppressed:
                     continue
 
                 saved = self.db.get_saved_product_fbs(
@@ -1296,7 +1467,7 @@ class StockMonitorService:
                 )
                 saved_total = sum(saved.values())
                 restore_qty = (
-                    local_qty
+                    min(local_qty, restore_snapshot)
                     if shared_suppressed
                     else saved_total
                 )
@@ -1316,7 +1487,8 @@ class StockMonitorService:
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
                         "WB FBS: 0 шт. | склад WB: 0 шт.\n\n"
                         + (
-                            f"Актуальный основной склад: {restore_qty} шт.\n"
+                            f"Мой склад: {local_qty} шт.\n"
+                            f"Сохранено до обнуления: {restore_qty} шт.\n"
                             if shared_suppressed
                             else f"Сохранённый FBS-остаток: {restore_qty} шт.\n"
                         )
@@ -1329,8 +1501,9 @@ class StockMonitorService:
                     text = (
                         "🔎 /status: товар закончился везде\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        "Основной склад: 0 шт. | WB: 0 шт.\n\n"
-                        "Добавить остаток на основной склад?"
+                        f"Мой склад: {local_qty} шт. | Доступно для заказа: {available_qty} шт.\n"
+                        "WB: 0 шт.\n\n"
+                        "Перенести 1 или 5 шт. в «Доступно для заказа»?"
                     )
                     keyboard = self._depletion_action_keyboard(nm_id)
                 await self.tg.send_message(

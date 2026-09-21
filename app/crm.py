@@ -73,6 +73,10 @@ class CRMServer:
                 web.get("/api/inventory", self.inventory),
                 web.post("/api/inventory/adjust", self.adjust_inventory),
                 web.post("/api/inventory/set", self.set_inventory),
+                web.post(
+                    "/api/inventory/available/set",
+                    self.set_available_inventory,
+                ),
                 web.get("/api/inventory/movements", self.inventory_movements),
             ]
         )
@@ -167,13 +171,51 @@ class CRMServer:
                 initial = int(ozon_fbs_stock.get(sku, 0))
             self.db.ensure_local_stock(sku, initial)
 
+        # Normally SharedInventoryService already performs this migration
+        # before CRM starts. Keep a safe fallback for standalone/tests.
+        available_existing = self.db.get_order_available(
+            tuple(all_skus)
+        )
+        for sku in all_skus:
+            if sku in available_existing:
+                continue
+            wb_product = wb_by_sku.get(sku)
+            wb_qty = (
+                int(
+                    self.service.fbs_stock.get(
+                        wb_product.nm_id, 0
+                    )
+                )
+                if wb_product is not None
+                else 0
+            )
+            target = max(
+                wb_qty,
+                int(ozon_fbs_stock.get(sku, 0)),
+            )
+            self.db.ensure_order_available(sku, 0)
+            local_now = self.db.get_local_stock((sku,)).get(
+                sku, 0
+            )
+            target = min(int(local_now), target)
+            if target:
+                self.db.transfer_order_available(
+                    sku,
+                    target,
+                    reason="crm_bootstrap",
+                )
+
         local = self.db.get_local_stock(tuple(all_skus))
+        available = self.db.get_order_available(
+            tuple(all_skus)
+        )
 
         items: list[dict[str, Any]] = []
         for index, sku in enumerate(all_skus):
             wb_product = wb_by_sku.get(sku)
             ozon_product = ozon_catalog.get(sku)
             local_qty = int(local.get(sku, 0))
+            available_qty = int(available.get(sku, 0))
 
             wb_fbs: int | None = None
             wb_warehouses: int | None = None
@@ -206,14 +248,12 @@ class CRMServer:
             drift_channels: list[str] = []
             if (
                 wb_fbs is not None
-                and not fbs_suppressed
-                and wb_fbs != local_qty
+                and wb_fbs != available_qty
             ):
                 drift_channels.append("WB")
             if (
                 ozon_fbs is not None
-                and not ozon_fbs_suppressed
-                and ozon_fbs != local_qty
+                and ozon_fbs != available_qty
             ):
                 drift_channels.append("OZON")
 
@@ -234,6 +274,7 @@ class CRMServer:
                     "sku": sku,
                     "title": title or sku,
                     "local": local_qty,
+                    "available": available_qty,
                     "wb_fbs": wb_fbs,
                     "wb_warehouses": wb_warehouses,
                     "ozon_fbs": ozon_fbs,
@@ -254,6 +295,9 @@ class CRMServer:
                 "items": items,
                 "totals": {
                     "local": sum(item["local"] for item in items),
+                    "available": sum(
+                        item["available"] for item in items
+                    ),
                     "wb_fbs": sum(
                         item["wb_fbs"] or 0 for item in items
                     ),
@@ -386,6 +430,64 @@ class CRMServer:
                 content_type="application/json",
             ) from exc
         return web.json_response({"sku": sku, "quantity": quantity})
+
+    async def set_available_inventory(
+        self, request: web.Request
+    ) -> web.Response:
+        data = await self._payload(request)
+        sku = str(data.get("sku") or "").strip()
+        try:
+            quantity = int(data.get("quantity"))
+        except (TypeError, ValueError) as exc:
+            raise web.HTTPBadRequest(
+                text='{"error":"quantity must be an integer"}',
+                content_type="application/json",
+            ) from exc
+        if sku not in self._known_skus():
+            raise web.HTTPNotFound(
+                text='{"error":"unknown SKU"}',
+                content_type="application/json",
+            )
+        try:
+            if self.shared_inventory is not None:
+                quantity = (
+                    await self.shared_inventory.set_available_stock(
+                        sku,
+                        quantity,
+                        reason="crm_available_set",
+                    )
+                )
+            else:
+                _local, quantity = (
+                    self.db.transfer_order_available(
+                        sku,
+                        quantity,
+                        reason="crm_available_set",
+                    )
+                )
+        except ValueError as exc:
+            raise web.HTTPBadRequest(
+                text=web.json_response(
+                    {"error": str(exc)}
+                ).text,
+                content_type="application/json",
+            ) from exc
+        except RuntimeError as exc:
+            raise web.HTTPBadGateway(
+                text=web.json_response(
+                    {
+                        "error": (
+                            "«Доступно для заказа» сохранено, но "
+                            "синхронизация WB/OZON не завершена: "
+                            f"{exc}"
+                        )
+                    }
+                ).text,
+                content_type="application/json",
+            ) from exc
+        return web.json_response(
+            {"sku": sku, "quantity": quantity}
+        )
 
     async def inventory_movements(self, request: web.Request) -> web.Response:
         try:

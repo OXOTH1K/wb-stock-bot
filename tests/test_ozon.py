@@ -92,31 +92,62 @@ class FakeOzon:
 
 
 class FakeInventory:
-    def __init__(self, db, quantities=None):
+    def __init__(self, db, local=None, available=None):
         self.db = db
-        self.quantities = dict(quantities or {})
+        self.local = dict(local or {})
+        self.available = dict(available or {})
         self.set_calls = []
         self.suppress_calls = []
         self.restore_calls = []
+        self.snapshots = {}
 
     def local_quantity(self, sku):
-        return int(self.quantities.get(sku, 0))
+        return int(self.local.get(sku, 0))
+
+    def available_quantity(self, sku):
+        return int(self.available.get(sku, 0))
 
     def is_suppressed(self, channel, sku):
         return self.db.is_channel_suppressed(channel, sku)
 
     async def set_local_stock(self, sku, quantity, reason="test"):
-        self.quantities[str(sku)] = int(quantity)
-        self.set_calls.append((str(sku), int(quantity), reason))
+        self.local[str(sku)] = int(quantity)
         return int(quantity)
 
+    async def set_available_stock(
+        self, sku, quantity, reason="test", **kwargs
+    ):
+        sku = str(sku)
+        quantity = int(quantity)
+        before = self.available_quantity(sku)
+        delta = quantity - before
+        local = self.local_quantity(sku)
+        if delta > local:
+            raise ValueError("Недостаточно товара")
+        self.local[sku] = local - delta
+        self.available[sku] = quantity
+        self.set_calls.append((sku, quantity, reason))
+        self.db.set_channel_stock("ozon_fbs", sku, quantity)
+        return quantity
+
     async def suppress_channel(self, channel, sku, reason):
+        sku = str(sku)
         self.suppress_calls.append((channel, sku, reason))
+        before = self.available_quantity(sku)
+        self.snapshots[(channel, sku)] = before
+        self.local[sku] = self.local_quantity(sku) + before
+        self.available[sku] = 0
         self.db.set_channel_suppressed(channel, sku, reason)
         self.db.set_channel_stock("ozon_fbs", sku, 0)
 
     async def restore_channel(self, channel, sku):
-        quantity = self.local_quantity(sku)
+        sku = str(sku)
+        quantity = min(
+            int(self.snapshots.get((channel, sku), 0)),
+            self.local_quantity(sku),
+        )
+        self.local[sku] = self.local_quantity(sku) - quantity
+        self.available[sku] = quantity
         self.restore_calls.append((channel, sku, quantity))
         self.db.clear_channel_suppressed(channel, sku)
         self.db.set_channel_stock("ozon_fbs", sku, quantity)
@@ -213,7 +244,9 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fbo_appearance_offers_zeroing_ozon_fbs(self):
         inventory = FakeInventory(
-            self.db, {"SKU-A": 5, "OZON-ONLY": 4}
+            self.db,
+            local={"SKU-A": 0, "OZON-ONLY": 0},
+            available={"SKU-A": 5, "OZON-ONLY": 4},
         )
         self.ozon.set_shared_inventory(inventory)
         await self.ozon.refresh_catalog_and_stocks(
@@ -236,9 +269,11 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
             str(keyboard),
         )
 
-    async def test_total_ozon_depletion_offers_add_to_local_stock(self):
+    async def test_total_ozon_depletion_offers_transfer_to_available(self):
         inventory = FakeInventory(
-            self.db, {"SKU-A": 0, "OZON-ONLY": 4}
+            self.db,
+            local={"SKU-A": 5, "OZON-ONLY": 0},
+            available={"SKU-A": 0, "OZON-ONLY": 4},
         )
         self.ozon.set_shared_inventory(inventory)
         await self.ozon.refresh_catalog_and_stocks(
@@ -266,9 +301,11 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(alerts_again), 1)
 
-    async def test_depletion_add_button_sets_shared_local_stock(self):
+    async def test_depletion_add_button_sets_shared_available_stock(self):
         inventory = FakeInventory(
-            self.db, {"SKU-A": 0, "OZON-ONLY": 4}
+            self.db,
+            local={"SKU-A": 5, "OZON-ONLY": 0},
+            available={"SKU-A": 0, "OZON-ONLY": 4},
         )
         self.ozon.set_shared_inventory(inventory)
         await self.ozon.refresh_catalog_and_stocks(
