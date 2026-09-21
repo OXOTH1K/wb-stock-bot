@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -543,6 +544,78 @@ class OzonClientParsingTests(unittest.IsolatedAsyncioTestCase):
                 "/v2/warehouse/list",
                 {"limit": 100, "cursor": "next-page"},
             ),
+        )
+
+    async def test_ship_waits_for_async_status_propagation_without_resending(self):
+        awaiting = {
+            "result": {
+                "posting_number": "A",
+                "status": "awaiting_packaging",
+                "products": [
+                    {
+                        "offer_id": "SKU-A",
+                        "name": "Alpha",
+                        "quantity": 2,
+                        "sku": 101,
+                    }
+                ],
+            }
+        }
+        delivered = {
+            "result": {
+                "posting_number": "A",
+                "status": "awaiting_deliver",
+                "products": [
+                    {
+                        "offer_id": "SKU-A",
+                        "name": "Alpha",
+                        "quantity": 2,
+                        "sku": 101,
+                    }
+                ],
+            }
+        }
+        client = ParsingOzonClient(
+            [
+                ("/v4/posting/fbs/ship", {"result": ["A"]}),
+                ("/v3/posting/fbs/get", awaiting),
+                ("/v3/posting/fbs/get", awaiting),
+                ("/v3/posting/fbs/get", awaiting),
+                ("/v3/posting/fbs/get", delivered),
+            ]
+        )
+        posting = OzonPosting(
+            posting_number="A",
+            order_number="1",
+            status="awaiting_packaging",
+            cutoff="",
+            warehouse_id=1,
+            products=(
+                OzonPostingProduct("SKU-A", "Alpha", 2, 101),
+            ),
+        )
+
+        with patch(
+            "app.ozon_client.asyncio.sleep",
+            new=AsyncMock(),
+        ) as sleep:
+            await client.ship_fbs(posting)
+
+        self.assertEqual(
+            [path for path, _ in client.requests].count(
+                "/v4/posting/fbs/ship"
+            ),
+            1,
+        )
+        self.assertEqual(
+            [path for path, _ in client.requests].count(
+                "/v3/posting/fbs/get"
+            ),
+            4,
+        )
+        self.assertEqual(
+            [call.args[0] for call in sleep.await_args_list],
+            [0.5, 1.0, 2.0],
         )
 
     async def test_ship_sends_single_package_and_verifies_status(self):
