@@ -2,9 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from app.db import StateDB
 from app.orders import FBSOrder, FBSSupply, OrderMonitor
+from app.wb_client import WBAPIError
 
 
 class FakeTelegram:
@@ -34,6 +36,7 @@ class FakeWB:
         self.created = []
         self.added = []
         self.box_adds = []
+        self.box_post_404_failures = 0
 
     async def _json(self, method, url, **kwargs):
         if method == "GET" and url.endswith("/api/v3/orders/new"):
@@ -82,6 +85,12 @@ class FakeWB:
             return {"trbxes": [{"id": x} for x in self.boxes.get(supply_id, [])]}
         if method == "POST" and url.endswith("/trbx"):
             supply_id = url.split("/supplies/", 1)[1].split("/", 1)[0]
+            if self.box_post_404_failures > 0:
+                self.box_post_404_failures -= 1
+                raise WBAPIError(
+                    'WB API 404: {"code":"NotFound","message":"Not found"}',
+                    status=404,
+                )
             amount = kwargs["json"]["amount"]
             ids = [f"TRBX-{len(self.boxes.get(supply_id, [])) + i + 1}" for i in range(amount)]
             self.boxes.setdefault(supply_id, []).extend(ids)
@@ -307,6 +316,66 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(501, monitor.current_new_orders)
         self.assertEqual(monitor.current_supply_orders[501], "WB-GI-1")
         self.assertIn("Создано одно грузоместо", tg.edits[0][2])
+
+    async def test_new_supply_retries_transient_box_404(self):
+        monitor, wb, tg = self.monitor([self.row()], [])
+        wb.box_post_404_failures = 2
+
+        await monitor.refresh()
+        with patch(
+            "app.orders.asyncio.sleep",
+            new=AsyncMock(),
+        ) as sleep:
+            await monitor.handle_callback(
+                123, 9, "ordnew:501", "alert"
+            )
+
+        self.assertEqual(wb.box_adds, [("WB-GI-1", 1)])
+        self.assertEqual(len(wb.boxes["WB-GI-1"]), 1)
+        self.assertEqual(sleep.await_count, 2)
+        self.assertIn(
+            "Создано одно грузоместо",
+            tg.edits[-1][2],
+        )
+
+    async def test_failed_box_creation_can_be_retried_by_button(self):
+        monitor, wb, tg = self.monitor([self.row()], [])
+        wb.box_post_404_failures = 10
+
+        await monitor.refresh()
+        with patch(
+            "app.orders.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            await monitor.handle_callback(
+                123, 9, "ordnew:501", "alert"
+            )
+
+        self.assertEqual(
+            monitor._state(501),
+            ("assigned", "WB-GI-1"),
+        )
+        self.assertEqual(wb.box_adds, [])
+        retry_markup = tg.edits[-1][3]["reply_markup"]
+        callback = retry_markup["inline_keyboard"][0][0][
+            "callback_data"
+        ]
+        self.assertEqual(
+            callback,
+            "ordbox:501:WB-GI-1",
+        )
+
+        wb.box_post_404_failures = 0
+        await monitor.handle_callback(
+            123,
+            10,
+            callback,
+            tg.edits[-1][2],
+        )
+
+        self.assertEqual(wb.box_adds, [("WB-GI-1", 1)])
+        self.assertEqual(len(wb.boxes["WB-GI-1"]), 1)
+        self.assertIn("Грузоместо создано", tg.edits[-1][2])
 
     async def test_create_refreshes_choices_if_supply_appeared(self):
         monitor, wb, tg = self.monitor([self.row()], [])

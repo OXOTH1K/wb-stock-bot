@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from .config import Settings
 from .db import StateDB
 from .telegram import TelegramBot
-from .wb_client import WildberriesClient
+from .wb_client import WBAPIError, WildberriesClient
 
 if TYPE_CHECKING:
     from .shared_inventory import SharedInventoryService
@@ -526,12 +526,37 @@ class OrderMonitor:
             except Exception:
                 log.exception("FBS order refresh/recovery failed")
 
-    async def _finish(self, chat_id: int, message_id: int, original: str, status: str) -> None:
-        text = f"{original.rstrip()}\n\n{status}" if original.strip() else status
+    async def _finish(
+        self,
+        chat_id: int,
+        message_id: int,
+        original: str,
+        status: str,
+        reply_markup: dict | None = None,
+    ) -> None:
+        text = (
+            f"{original.rstrip()}\n\n{status}"
+            if original.strip()
+            else status
+        )
+        markup = (
+            reply_markup
+            if reply_markup is not None
+            else {"inline_keyboard": []}
+        )
         try:
-            await self.tg.edit_message_text(chat_id, message_id, text, reply_markup={"inline_keyboard": []})
+            await self.tg.edit_message_text(
+                chat_id,
+                message_id,
+                text,
+                reply_markup=markup,
+            )
         except Exception:
-            await self.tg.send_message(chat_id, status)
+            await self.tg.send_message(
+                chat_id,
+                status,
+                reply_markup=markup,
+            )
 
     async def _current_order(self, order_id: int) -> FBSOrder | None:
         return next((o for o in await self._new_orders() if o.id == int(order_id)), None)
@@ -551,16 +576,85 @@ class OrderMonitor:
     async def _add_order(self, supply_id: str, order_id: int) -> None:
         await self.wb._json("PATCH", f"{self.wb.MARKETPLACE_BASE}/api/marketplace/v3/supplies/{supply_id}/orders", json={"orders": [int(order_id)]})
 
-    async def _one_box(self, supply_id: str) -> str:
-        data = await self.wb._json(
-            "POST",
-            f"{self.wb.MARKETPLACE_BASE}/api/v3/supplies/{supply_id}/trbx",
-            json={"amount": 1},
+    @staticmethod
+    def _box_retry_keyboard(
+        order_id: int, supply_id: str
+    ) -> dict:
+        return {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "📦 Повторить создание грузоместа",
+                        "callback_data": (
+                            f"ordbox:{int(order_id)}:{supply_id}"
+                        ),
+                    }
+                ]
+            ]
+        }
+
+    async def _one_box(
+        self, supply_id: str
+    ) -> tuple[str, bool]:
+        """Ensure one box exists for a newly created supply.
+
+        WB can briefly return 404 immediately after an order is moved to a
+        fresh supply while the supply is becoming available to the box API.
+        Retry only that definite NotFound response. Before every create
+        attempt, check whether a previous attempt already created a box so
+        retries cannot create duplicates.
+        """
+        url = (
+            f"{self.wb.MARKETPLACE_BASE}/api/v3/"
+            f"supplies/{supply_id}/trbx"
         )
-        ids = [str(x) for x in (data or {}).get("trbxIds", [])]
-        if len(ids) != 1:
-            raise RuntimeError("WB не вернул ID грузоместа")
-        return ids[0]
+        attempts = 5
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                current = await self.wb._json("GET", url)
+                existing = [
+                    str(row.get("id") or "")
+                    for row in (current or {}).get("trbxes", [])
+                    if row.get("id")
+                ]
+                if existing:
+                    return existing[0], False
+
+                data = await self.wb._json(
+                    "POST",
+                    url,
+                    json={"amount": 1},
+                )
+                ids = [
+                    str(x)
+                    for x in (data or {}).get("trbxIds", [])
+                    if x
+                ]
+                if len(ids) != 1:
+                    raise RuntimeError(
+                        "WB не вернул ID грузоместа"
+                    )
+                return ids[0], True
+            except WBAPIError as exc:
+                last_error = exc
+                if exc.status != 404 or attempt + 1 >= attempts:
+                    raise
+                delay = 0.5 * (attempt + 1)
+                log.warning(
+                    "WB box API is not ready for supply %s "
+                    "(attempt %d/%d): %s; retrying in %.1fs",
+                    supply_id,
+                    attempt + 1,
+                    attempts,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+
+        raise RuntimeError(
+            f"Не удалось создать грузоместо: {last_error}"
+        )
 
     async def handle_callback(self, chat_id: int, message_id: int, data: str, original: str = "") -> bool:
         if not data.startswith("ord"):
@@ -572,6 +666,61 @@ class OrderMonitor:
                 parts = data.split(":")
                 action, order_id = parts[0], int(parts[1])
                 state = self._state(order_id)
+                if action == "ordbox":
+                    supply_id = (
+                        parts[2] if len(parts) > 2 else ""
+                    )
+                    if (
+                        state is None
+                        or state[0] != "assigned"
+                        or not state[1]
+                        or state[1] != supply_id
+                    ):
+                        await self._finish(
+                            chat_id,
+                            message_id,
+                            original,
+                            (
+                                "ℹ️ Повторное создание грузоместа "
+                                "недоступно: поставка заказа изменилась."
+                            ),
+                        )
+                        return True
+                    try:
+                        _box_id, created = await self._one_box(
+                            supply_id
+                        )
+                        status = (
+                            "✅ Грузоместо создано."
+                            if created
+                            else "ℹ️ Грузоместо уже существует."
+                        )
+                        await self._finish(
+                            chat_id,
+                            message_id,
+                            original,
+                            status,
+                        )
+                    except Exception as exc:
+                        log.exception(
+                            "Retry box creation failed for supply %s",
+                            supply_id,
+                        )
+                        await self._finish(
+                            chat_id,
+                            message_id,
+                            original,
+                            (
+                                "⚠️ Грузоместо всё ещё не создано: "
+                                f"{exc}\n"
+                                "WB разрешает грузоместа только для "
+                                "поставок в ПВЗ."
+                            ),
+                            reply_markup=self._box_retry_keyboard(
+                                order_id, supply_id
+                            ),
+                        )
+                    return True
                 if state and state[0] in {"assigned", "skipped"}:
                     status = f"ℹ️ Заказ уже добавлен в поставку {state[1]}." if state[0] == "assigned" else "ℹ️ Уже выбрано «Не добавлять»."
                     await self._finish(chat_id, message_id, original, status)
@@ -620,12 +769,44 @@ class OrderMonitor:
                     self.db.set_order_runtime_status(order.id, "confirm", "waiting")
                     self._set_state(order.id, "assigned", supply_id)
                     try:
-                        await self._one_box(supply_id)
-                        status = f"✅ Заказ добавлен в новую поставку {supply_id}.\n📦 Создано одно грузоместо."
+                        _box_id, created = await self._one_box(
+                            supply_id
+                        )
+                        box_status = (
+                            "📦 Создано одно грузоместо."
+                            if created
+                            else "📦 Грузоместо уже существует."
+                        )
+                        status = (
+                            f"✅ Заказ добавлен в новую поставку "
+                            f"{supply_id}.\n{box_status}"
+                        )
+                        await self._finish(
+                            chat_id,
+                            message_id,
+                            original,
+                            status,
+                        )
                     except Exception as exc:
-                        log.exception("Order assigned but box creation failed")
-                        status = f"✅ Заказ добавлен в новую поставку {supply_id}.\n⚠️ Грузоместо не создано: {exc}"
-                    await self._finish(chat_id, message_id, original, status)
+                        log.exception(
+                            "Order assigned but box creation failed"
+                        )
+                        status = (
+                            f"✅ Заказ добавлен в новую поставку "
+                            f"{supply_id}.\n"
+                            f"⚠️ Грузоместо не создано: {exc}\n"
+                            "WB разрешает грузоместа только для "
+                            "поставок в ПВЗ."
+                        )
+                        await self._finish(
+                            chat_id,
+                            message_id,
+                            original,
+                            status,
+                            reply_markup=self._box_retry_keyboard(
+                                order.id, supply_id
+                            ),
+                        )
                     return True
         except Exception as exc:
             log.exception("Order callback failed: %s", data)
