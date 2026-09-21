@@ -1405,13 +1405,6 @@ class StockMonitorService:
                         "wb", sku
                     )
                 )
-                any_shared_suppression = (
-                    self.shared_inventory is not None
-                    and (
-                        self.db.is_channel_suppressed("wb", sku)
-                        or self.db.is_channel_suppressed("ozon", sku)
-                    )
-                )
                 shared_suppressed = (
                     self.shared_inventory is not None
                     and wb_reason == "marketplace_stock"
@@ -1426,30 +1419,36 @@ class StockMonitorService:
                     if self.shared_inventory is not None
                     else fbs_qty
                 )
-                restore_snapshot = int(
-                    self.db.get_available_snapshot(
-                        "marketplace:wb"
-                    ).get(sku, 0)
-                )
-                if (
-                    shared_suppressed
-                    and (local_qty <= 0 or restore_snapshot <= 0)
-                ):
-                    self.db.clear_channel_suppressed("wb", sku)
-                    self.db.clear_saved_product_fbs("wb_auto", nm_id)
-                    continue
-                if any_shared_suppression and not shared_suppressed:
-                    continue
 
-                saved = self.db.get_saved_product_fbs(
-                    "wb_auto", nm_id
-                )
-                saved_total = sum(saved.values())
-                restore_qty = (
-                    min(local_qty, restore_snapshot)
-                    if shared_suppressed
-                    else saved_total
-                )
+                if shared_suppressed:
+                    if available_qty <= 0:
+                        self.db.clear_channel_suppressed(
+                            "wb", sku
+                        )
+                        self.db.clear_saved_product_fbs(
+                            "wb_auto", nm_id
+                        )
+                        continue
+                    restore_qty = available_qty
+                else:
+                    # In the shared model an unsuppressed WB FBS should
+                    # mirror "Доступно для заказа". Repair drift silently
+                    # instead of offering to add stock again.
+                    if (
+                        self.shared_inventory is not None
+                        and available_qty > 0
+                    ):
+                        await self.shared_inventory.sync_sku(
+                            sku,
+                            raise_errors=False,
+                            force=True,
+                        )
+                        continue
+                    saved = self.db.get_saved_product_fbs(
+                        "wb_auto", nm_id
+                    )
+                    restore_qty = sum(saved.values())
+
                 action = (
                     "fbsrestore"
                     if restore_qty > 0
@@ -1461,18 +1460,22 @@ class StockMonitorService:
                     continue
                 actionable += 1
                 if restore_qty > 0:
-                    text = (
-                        "🔎 /status: товар закончился на складе WB\n"
-                        f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        "WB FBS: 0 шт. | склад WB: 0 шт.\n\n"
-                        + (
-                            f"Мой склад: {local_qty} шт.\n"
-                            f"Сохранено до обнуления: {restore_qty} шт.\n"
-                            if shared_suppressed
-                            else f"Сохранённый FBS-остаток: {restore_qty} шт.\n"
+                    if shared_suppressed:
+                        text = (
+                            "🔎 /status: товар закончился на складе WB\n"
+                            f"Артикул продавца: {product.vendor_code or '—'}\n"
+                            "WB FBS: 0 шт. | склад WB: 0 шт.\n"
+                            f"Доступно для заказа: {restore_qty} шт.\n\n"
+                            "Вернуть текущее доступное количество только на WB FBS?"
                         )
-                        + "Вернуть остаток на WB FBS?"
-                    )
+                    else:
+                        text = (
+                            "🔎 /status: товар закончился на складе WB\n"
+                            f"Артикул продавца: {product.vendor_code or '—'}\n"
+                            "WB FBS: 0 шт. | склад WB: 0 шт.\n\n"
+                            f"Сохранённый FBS-остаток: {restore_qty} шт.\n"
+                            "Вернуть остаток на WB FBS?"
+                        )
                     keyboard = self._saved_restore_keyboard(
                         nm_id, restore_qty
                     )
@@ -1480,11 +1483,14 @@ class StockMonitorService:
                     text = (
                         "🔎 /status: товар закончился везде\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        f"Мой склад: {local_qty} шт. | Доступно для заказа: {available_qty} шт.\n"
+                        f"Мой склад: {local_qty} шт. | "
+                        f"Доступно для заказа: {available_qty} шт.\n"
                         "WB: 0 шт.\n\n"
                         "Перенести 1 или 5 шт. в «Доступно для заказа»?"
                     )
-                    keyboard = self._depletion_action_keyboard(nm_id)
+                    keyboard = self._depletion_action_keyboard(
+                        nm_id
+                    )
                 await self.tg.send_message(
                     chat_id,
                     text,
