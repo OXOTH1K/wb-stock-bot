@@ -861,7 +861,7 @@ class StockMonitorService:
                 message_id,
                 original_text,
                 (
-                    "✅ WB FBS обнулён. "
+                    "✅ Только WB FBS обнулён. "
                     "«Доступно для заказа», OZON FBS и «Мой склад» не изменены."
                 ),
             )
