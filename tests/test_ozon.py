@@ -319,7 +319,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "marketplace_stock",
         )
         self.assertIn(
-            "только OZON FBS",
+            "OZON FBS обнулён",
             self.tg.edits[-1][2],
         )
 
