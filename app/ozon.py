@@ -492,11 +492,15 @@ class OzonIntegration:
         reason = self.db.get_channel_suppression_reason(
             "ozon", sku
         )
+        any_shared_suppression = (
+            self.db.is_channel_suppressed("ozon", sku)
+            or self.db.is_channel_suppressed("wb", sku)
+        )
         if (
             fbs_qty != 0
             or fbo_qty != 0
             or available > 0
-            or reason in {"mass", "marketplace_stock"}
+            or any_shared_suppression
         ):
             return
         if self._stock_decision_matches(
@@ -553,6 +557,10 @@ class OzonIntegration:
             available = self.inventory.available_quantity(sku)
             reason = self.db.get_channel_suppression_reason(
                 "ozon", sku
+            )
+            any_shared_suppression = (
+                self.db.is_channel_suppressed("ozon", sku)
+                or self.db.is_channel_suppressed("wb", sku)
             )
 
             if (
@@ -692,8 +700,6 @@ class OzonIntegration:
                 continue
 
             if fbs_qty == 0 and fbo_qty == 0:
-                if reason == "mass":
-                    continue
                 if reason == "marketplace_stock" and local > 0:
                     restore_qty = int(
                         self.db.get_available_snapshot(
@@ -724,6 +730,8 @@ class OzonIntegration:
                         ),
                         reply_markup=keyboard,
                     )
+                    continue
+                if any_shared_suppression:
                     continue
                 if available <= 0:
                     if self._stock_decision_matches(
