@@ -72,8 +72,16 @@ class SharedInventoryService:
         ozon_stock = self.db.get_channel_stock(
             "ozon_fbs", tuple(all_skus)
         )
+        existing_available = self.db.get_order_available(
+            tuple(all_skus)
+        )
+        full_local_model = (
+            self.db.get_meta("inventory_model_full_local_v1")
+            == "1"
+        )
 
-        # First preserve the old single-pool quantity as physical total.
+        # Ensure a physical-stock row exists for every catalog SKU. On old
+        # installations this value is the legacy single stock pool.
         for sku in all_skus:
             wb_product = wb_by_sku.get(sku)
             if wb_product is not None:
@@ -93,9 +101,7 @@ class SharedInventoryService:
                 legacy_total = int(ozon_stock.get(sku, 0))
             self.db.ensure_local_stock(sku, legacy_total)
 
-        # Preserve legacy per-channel marketplace suppression. It affects
-        # only that marketplace FBS; the shared available pool remains sellable
-        # on the other marketplace.
+        # Preserve legacy WB per-platform suppression.
         migrated: set[int] = set()
         for (nm_id, _chrt_id), _quantity in self.db.get_saved_fbs(
             "wb_auto"
@@ -114,13 +120,7 @@ class SharedInventoryService:
                     "wb", sku, "marketplace_stock"
                 )
 
-        # One-time per-SKU migration from the old single pool:
-        # currently sellable stock moves out of "Мой склад" into
-        # "Доступно для заказа". Individual marketplace suppression does not
-        # zero this pool; only the suppressed platform FBS stays at zero.
-        existing_available = self.db.get_order_available(
-            tuple(all_skus)
-        )
+        changed_skus: set[str] = set()
         for sku in all_skus:
             wb_qty = 0
             product = wb_by_sku.get(sku)
@@ -147,76 +147,122 @@ class SharedInventoryService:
             local = self.local_quantity(sku)
 
             if sku not in existing_available:
+                # Legacy/fresh install: local_inventory already represents
+                # the full physical quantity. Initialize only the sellable
+                # limit; do not subtract anything from physical stock.
                 current_marketplace = max(wb_qty, ozon_qty)
                 if (
                     current_marketplace <= 0
                     and marketplace_suppressed
                     and not mass_suppressed
                 ):
-                    current_marketplace = local
+                    snapshots = [
+                        int(
+                            self.db.get_available_snapshot(
+                                "marketplace:wb"
+                            ).get(sku, 0)
+                        ),
+                        int(
+                            self.db.get_available_snapshot(
+                                "marketplace:ozon"
+                            ).get(sku, 0)
+                        ),
+                    ]
+                    current_marketplace = max(
+                        [local, *snapshots]
+                    )
                 target = (
                     0
                     if mass_suppressed
                     else min(local, current_marketplace)
                 )
-                self.db.ensure_order_available(sku, 0)
-                if target:
-                    self.db.transfer_order_available(
-                        sku,
-                        target,
-                        reason="migration_from_legacy_pool",
-                    )
+                self.db.ensure_order_available(sku, target)
                 continue
 
-            # PR #27 briefly implemented individual suppression by moving the
-            # shared available pool back to "Мой склад". Repair that state on
-            # startup while keeping the affected marketplace itself suppressed.
             available = int(existing_available.get(sku, 0))
-            if (
-                available != 0
-                or not marketplace_suppressed
-                or mass_suppressed
-                or local <= 0
-            ):
-                continue
+            if not full_local_model:
+                # PR #27-29 used split accounting: local_inventory contained
+                # only the reserve outside "Доступно". Convert once so
+                # local_inventory becomes the full physical quantity.
+                #
+                # Exception: an individual suppression in PR #27 may already
+                # have returned available stock to local and left available=0.
+                # In that case restore only the sellable limit, without adding
+                # it to local again.
+                recovered_from_shared_zero = False
+                if (
+                    available == 0
+                    and marketplace_suppressed
+                    and not mass_suppressed
+                    and local > 0
+                ):
+                    recovery_candidates = [
+                        int(
+                            self.db.get_available_snapshot(
+                                "marketplace:wb"
+                            ).get(sku, 0)
+                        ),
+                        int(
+                            self.db.get_available_snapshot(
+                                "marketplace:ozon"
+                            ).get(sku, 0)
+                        ),
+                    ]
+                    if wb_reason != "marketplace_stock":
+                        recovery_candidates.append(wb_qty)
+                    if ozon_reason != "marketplace_stock":
+                        recovery_candidates.append(ozon_qty)
+                    recovered = max(recovery_candidates)
+                    if recovered <= 0:
+                        recovered = local
+                    recovered = min(local, recovered)
+                    if recovered > 0:
+                        self.db.set_order_available(
+                            sku,
+                            recovered,
+                            reason=(
+                                "migration_restore_platform_"
+                                "suppression_limit"
+                            ),
+                        )
+                        available = recovered
+                        recovered_from_shared_zero = True
+                        changed_skus.add(sku)
 
-            recovery_candidates = [
-                int(
-                    self.db.get_available_snapshot(
-                        "marketplace:wb"
-                    ).get(sku, 0)
-                ),
-                int(
-                    self.db.get_available_snapshot(
-                        "marketplace:ozon"
-                    ).get(sku, 0)
-                ),
-            ]
-            if wb_reason != "marketplace_stock":
-                recovery_candidates.append(wb_qty)
-            if ozon_reason != "marketplace_stock":
-                recovery_candidates.append(ozon_qty)
-            recovered = max(recovery_candidates)
-            if recovered <= 0:
-                recovered = local
-            recovered = min(local, recovered)
-            if recovered > 0:
-                self.db.transfer_order_available(
+                if available > 0 and not recovered_from_shared_zero:
+                    self.db.set_local_stock(
+                        sku,
+                        local + available,
+                        reason="migration_full_local_stock",
+                    )
+                    local += available
+
+            # Enforce the new invariant even for manually edited/stale DBs.
+            available = self.available_quantity(sku)
+            local = self.local_quantity(sku)
+            if available > local:
+                self.db.set_order_available(
                     sku,
-                    recovered,
-                    reason="migration_restore_platform_suppression",
+                    local,
+                    reason="clamp_to_full_local_stock",
                 )
-                self.db.clear_available_snapshot(
-                    "marketplace:wb", sku
-                )
-                self.db.clear_available_snapshot(
-                    "marketplace:ozon", sku
-                )
-                await self.sync_sku(
-                    sku,
-                    raise_errors=False,
-                    force=True,
-                )
+                changed_skus.add(sku)
+
+            self.db.clear_available_snapshot(
+                "marketplace:wb", sku
+            )
+            self.db.clear_available_snapshot(
+                "marketplace:ozon", sku
+            )
+
+        self.db.set_meta("inventory_model_full_local_v1", "1")
+
+        for sku in sorted(changed_skus):
+            await self.sync_sku(
+                sku,
+                raise_errors=False,
+                force=True,
+            )
 
     def _ensure_available_for_sale(
         self,
@@ -249,12 +295,16 @@ class SharedInventoryService:
                 current += int(pending_quantity)
             candidates.append(current)
 
-        self.db.ensure_local_stock(sku, 0)
-        self.db.ensure_order_available(
-            sku,
+        bootstrap = (
             max(candidates)
             if candidates
-            else int(pending_quantity),
+            else int(pending_quantity)
+        )
+        self.db.ensure_local_stock(sku, bootstrap)
+        local = self.local_quantity(sku)
+        self.db.ensure_order_available(
+            sku,
+            min(local, bootstrap),
         )
 
     async def consume_sales(
@@ -342,12 +392,23 @@ class SharedInventoryService:
         quantity: int,
         reason: str = "crm",
     ) -> int:
-        """Edit physical local stock without changing marketplace FBS."""
+        """Edit full physical stock; clamp sellable stock only if necessary."""
         async with self._lock:
             result = self.db.set_local_stock(
                 sku, quantity, reason=reason
             )
             self._clear_wb_decisions(sku)
+            if self.available_quantity(sku) > result:
+                self.db.set_order_available(
+                    sku,
+                    result,
+                    reason=f"{reason}:clamp_available",
+                )
+                await self.sync_sku(
+                    sku,
+                    raise_errors=True,
+                    force=True,
+                )
             return result
 
     async def set_available_stock(
@@ -358,9 +419,9 @@ class SharedInventoryService:
         *,
         force: bool = True,
     ) -> int:
-        """Move stock between local and sellable pool, then sync both FBS."""
+        """Set sellable limit without changing full physical stock."""
         async with self._lock:
-            _local, available = self.db.transfer_order_available(
+            available = self.db.set_order_available(
                 sku, quantity, reason=reason
             )
             self._clear_wb_decisions(sku)
@@ -552,7 +613,7 @@ class SharedInventoryService:
             self.db.save_available_snapshot(
                 scope, sku, current
             )
-            self.db.transfer_order_available(
+            self.db.set_order_available(
                 sku, 0, reason=f"{scope}_zero"
             )
             total += current
@@ -570,12 +631,11 @@ class SharedInventoryService:
         restored = 0
         total = 0
         for sku, wanted in snapshot.items():
-            total_owned = (
-                self.local_quantity(sku)
-                + self.available_quantity(sku)
+            target = min(
+                int(wanted),
+                self.local_quantity(sku),
             )
-            target = min(int(wanted), total_owned)
-            self.db.transfer_order_available(
+            self.db.set_order_available(
                 sku, target, reason=f"{scope}_restore"
             )
             await self.sync_sku(
