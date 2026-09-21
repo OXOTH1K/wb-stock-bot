@@ -120,12 +120,9 @@ class FakeInventory:
     ):
         sku = str(sku)
         quantity = int(quantity)
-        before = self.available_quantity(sku)
-        delta = quantity - before
         local = self.local_quantity(sku)
-        if delta > local:
-            raise ValueError("Недостаточно товара")
-        self.local[sku] = local - delta
+        if quantity > local:
+            raise ValueError("Доступно больше физического остатка")
         self.available[sku] = quantity
         self.set_calls.append((sku, quantity, reason))
         self.db.set_channel_stock("ozon_fbs", sku, quantity)
