@@ -492,15 +492,15 @@ class OzonIntegration:
         reason = self.db.get_channel_suppression_reason(
             "ozon", sku
         )
-        any_shared_suppression = (
-            self.db.is_channel_suppressed("ozon", sku)
-            or self.db.is_channel_suppressed("wb", sku)
+        mass_zeroed = sku in self.db.get_available_snapshot(
+            "mass_shared"
         )
         if (
             fbs_qty != 0
             or fbo_qty != 0
             or available > 0
-            or any_shared_suppression
+            or reason == "marketplace_stock"
+            or mass_zeroed
         ):
             return
         if self._stock_decision_matches(
@@ -558,11 +558,6 @@ class OzonIntegration:
             reason = self.db.get_channel_suppression_reason(
                 "ozon", sku
             )
-            any_shared_suppression = (
-                self.db.is_channel_suppressed("ozon", sku)
-                or self.db.is_channel_suppressed("wb", sku)
-            )
-
             if (
                 int(old_fbo) == 0
                 and new_fbo > 0
@@ -590,8 +585,8 @@ class OzonIntegration:
                             f"Доступно для заказа: {available} шт.\n"
                             f"OZON FBS: {new_fbs} шт.\n"
                             f"OZON FBO: было 0 шт. → стало {new_fbo} шт.\n\n"
-                            "Обнулить «Доступно для заказа»? "
-                            "Тогда WB FBS и OZON FBS станут 0, а товар вернётся на «Мой склад»."
+                            "Обнулить только OZON FBS? "
+                            "«Доступно для заказа», WB FBS и «Мой склад» не изменятся."
                         ),
                         reply_markup=keyboard,
                     )
@@ -613,17 +608,15 @@ class OzonIntegration:
                 int(old_fbo) > 0
                 and new_fbo == 0
                 and reason == "marketplace_stock"
-                and local > 0
             ):
-                restore_qty = int(
-                    self.db.get_available_snapshot(
-                        "marketplace:ozon"
-                    ).get(sku, 0)
-                )
-                keyboard = (
-                    self._stock_keyboard(sku, "restore")
-                    if restore_qty > 0
-                    else None
+                restore_qty = available
+                if restore_qty <= 0:
+                    self.db.clear_channel_suppressed(
+                        "ozon", sku
+                    )
+                    continue
+                keyboard = self._stock_keyboard(
+                    sku, "restore"
                 )
                 if (
                     keyboard is not None
@@ -640,9 +633,8 @@ class OzonIntegration:
                         (
                             "🔵 Товар закончился на складе OZON\n"
                             f"Артикул продавца: {sku}\n"
-                            f"Мой склад: {local} шт.\n"
-                            f"До обнуления было доступно: {restore_qty} шт.\n\n"
-                            "Вернуть сохранённое количество в «Доступно для заказа» и оба FBS?"
+                            f"Доступно для заказа: {restore_qty} шт.\n\n"
+                            "Вернуть текущее доступное количество только на OZON FBS?"
                         ),
                         reply_markup=keyboard,
                     )
@@ -693,20 +685,18 @@ class OzonIntegration:
                         f"Артикул продавца: {sku}\n"
                         f"OZON FBS: {fbs_qty} шт. | "
                         f"OZON FBO: {fbo_qty} шт.\n\n"
-                        "Обнулить «Доступно для заказа» и оба FBS?"
+                        "Обнулить только OZON FBS?"
                     ),
                     reply_markup=keyboard,
                 )
                 continue
 
             if fbs_qty == 0 and fbo_qty == 0:
-                if reason == "marketplace_stock" and local > 0:
-                    restore_qty = int(
-                        self.db.get_available_snapshot(
-                            "marketplace:ozon"
-                        ).get(sku, 0)
-                    )
-                    if restore_qty <= 0:
+                if reason == "marketplace_stock":
+                    if available <= 0:
+                        self.db.clear_channel_suppressed(
+                            "ozon", sku
+                        )
                         continue
                     if self._stock_decision_matches(
                         sku, "restore", fbs_qty, fbo_qty
@@ -723,37 +713,47 @@ class OzonIntegration:
                         (
                             "🔎 /status: товар закончился на складе OZON\n"
                             f"Артикул продавца: {sku}\n"
-                            f"Мой склад: {local} шт.\n"
-                            f"Сохранено до обнуления: "
-                            f"{restore_qty} шт.\n\n"
-                            "Вернуть в «Доступно для заказа» и оба FBS?"
+                            f"Доступно для заказа: {available} шт.\n\n"
+                            "Вернуть текущее доступное количество только на OZON FBS?"
                         ),
                         reply_markup=keyboard,
                     )
                     continue
-                if any_shared_suppression:
+
+                if sku in self.db.get_available_snapshot(
+                    "mass_shared"
+                ):
                     continue
-                if available <= 0:
-                    if self._stock_decision_matches(
-                        sku, "add", fbs_qty, fbo_qty
-                    ):
-                        continue
-                    keyboard = self._depletion_keyboard(sku)
-                    if keyboard is None:
-                        continue
-                    actionable += 1
-                    await self.tg.send_message(
-                        chat_id,
-                        (
-                            "🔎 /status: товар закончился "
-                            "в OZON FBS и FBO\n"
-                            f"Артикул продавца: {sku}\n"
-                            f"Мой склад: {local} шт.\n"
-                            "Доступно для заказа: 0 шт.\n\n"
-                            "Перенести 1 или 5 шт. в «Доступно для заказа»?"
-                        ),
-                        reply_markup=keyboard,
+
+                if available > 0:
+                    await self.inventory.sync_sku(
+                        sku,
+                        raise_errors=False,
+                        force=True,
                     )
+                    continue
+
+                if self._stock_decision_matches(
+                    sku, "add", fbs_qty, fbo_qty
+                ):
+                    continue
+                keyboard = self._depletion_keyboard(sku)
+                if keyboard is None:
+                    continue
+                actionable += 1
+                await self.tg.send_message(
+                    chat_id,
+                    (
+                        "🔎 /status: товар закончился "
+                        "в OZON FBS и FBO\n"
+                        f"Артикул продавца: {sku}\n"
+                        f"Мой склад: {local} шт.\n"
+                        "Доступно для заказа: 0 шт.\n\n"
+                        "Перенести 1 или 5 шт. в «Доступно для заказа»?"
+                    ),
+                    reply_markup=keyboard,
+                )
+
         return actionable
 
     async def handle_message(
@@ -1168,7 +1168,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⏭ «Доступно для заказа» оставлено без изменений.",
+                        "⏭ OZON FBS оставлен без изменений.",
                     )
                     return True
                 if action == "skiprestore":
@@ -1183,7 +1183,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⏭ Сохранённое «Доступно для заказа» не восстанавливать.",
+                        "⏭ OZON FBS не восстанавливать.",
                     )
                     return True
                 if action == "skipadd":
@@ -1223,8 +1223,8 @@ class OzonIntegration:
                         message_id,
                         original,
                         (
-                            "✅ «Доступно для заказа» обнулено. "
-                            "Количество возвращено на «Мой склад», WB/OZON FBS установлены в 0."
+                            "✅ OZON FBS обнулён. "
+                            "«Доступно для заказа», WB FBS и «Мой склад» не изменены."
                         ),
                     )
                     return True
@@ -1258,7 +1258,8 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        f"✅ В «Доступно для заказа» восстановлено {quantity} шт.; WB/OZON FBS синхронизированы.",
+                        f"✅ OZON FBS восстановлен до текущего «Доступно для заказа»: {quantity} шт. "
+                        "WB FBS и локальные остатки не изменены.",
                     )
                     return True
 
