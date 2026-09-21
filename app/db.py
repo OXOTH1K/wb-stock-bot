@@ -597,18 +597,13 @@ class StateDB:
             for sku, quantity in rows
         }
 
-    def transfer_order_available(
+    def set_order_available(
         self,
         sku: str,
         quantity: int,
         reason: str = "manual",
-    ) -> tuple[int, int]:
-        """Move stock between local warehouse and order-available pool.
-
-        Increasing available consumes the same delta from local stock.
-        Decreasing available returns the delta to local stock.
-        Returns (local_quantity, available_quantity).
-        """
+    ) -> int:
+        """Set the sellable limit without moving physical local stock."""
         sku = str(sku).strip()
         if not sku:
             raise ValueError("SKU is required")
@@ -620,28 +615,128 @@ class StateDB:
             "SELECT quantity FROM local_inventory WHERE sku = ?",
             (sku,),
         ).fetchone()
+        local_quantity = (
+            int(local_row[0]) if local_row is not None else 0
+        )
+        if quantity > local_quantity:
+            raise ValueError(
+                "«Доступно для заказа» не может превышать "
+                f"«Мой склад»: доступно {local_quantity} шт."
+            )
+
+        row = self.conn.execute(
+            "SELECT quantity FROM order_available WHERE sku = ?",
+            (sku,),
+        ).fetchone()
+        before = int(row[0]) if row is not None else 0
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO order_available(sku, quantity, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(sku) DO UPDATE SET
+                    quantity = excluded.quantity,
+                    updated_at = excluded.updated_at
+                """,
+                (sku, quantity, now),
+            )
+            if quantity != before:
+                self.conn.execute(
+                    """
+                    INSERT INTO order_available_movement(
+                        sku, delta, before_qty, after_qty, reason, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sku,
+                        quantity - before,
+                        before,
+                        quantity,
+                        str(reason),
+                        now,
+                    ),
+                )
+        return quantity
+
+    def transfer_order_available(
+        self,
+        sku: str,
+        quantity: int,
+        reason: str = "manual",
+    ) -> tuple[int, int]:
+        """Backward-compatible alias for the old split-pool API.
+
+        "Доступно для заказа" is now a sellable limit and no longer moves
+        quantity into or out of local_inventory.
+        """
+        available = self.set_order_available(
+            sku, quantity, reason=reason
+        )
+        local = self.get_local_stock((str(sku),)).get(
+            str(sku), 0
+        )
+        return int(local), int(available)
+
+    def apply_available_sale_once(
+        self,
+        channel: str,
+        event_id: str,
+        sku: str,
+        quantity: int,
+    ) -> tuple[bool, int, int]:
+        """Apply one marketplace sale to both physical and sellable stock."""
+        channel = str(channel)
+        event_id = str(event_id)
+        sku = str(sku).strip()
+        quantity = max(0, int(quantity))
+        if not sku or quantity <= 0:
+            return False, 0, 0
+
+        seen = self.conn.execute(
+            """
+            SELECT 1
+            FROM inventory_sale_event
+            WHERE channel = ? AND event_id = ? AND sku = ?
+            """,
+            (channel, event_id, sku),
+        ).fetchone()
         available_row = self.conn.execute(
             "SELECT quantity FROM order_available WHERE sku = ?",
             (sku,),
         ).fetchone()
-        local_before = (
-            int(local_row[0]) if local_row is not None else 0
-        )
+        local_row = self.conn.execute(
+            "SELECT quantity FROM local_inventory WHERE sku = ?",
+            (sku,),
+        ).fetchone()
         available_before = (
             int(available_row[0])
             if available_row is not None
             else 0
         )
-        delta = quantity - available_before
-        if delta > local_before:
-            raise ValueError(
-                "Недостаточно товара на «Моём складе»: "
-                f"нужно {delta}, доступно {local_before}"
-            )
-        local_after = local_before - delta
-        now = datetime.now(timezone.utc).isoformat()
+        local_before = (
+            int(local_row[0]) if local_row is not None else 0
+        )
+        if seen is not None:
+            return False, available_before, available_before
 
+        local_after = max(0, local_before - quantity)
+        available_after = min(
+            max(0, available_before - quantity),
+            local_after,
+        )
+        now = datetime.now(timezone.utc).isoformat()
         with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO inventory_sale_event(
+                    channel, event_id, sku, quantity, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (channel, event_id, sku, quantity, now),
+            )
             self.conn.execute(
                 """
                 INSERT INTO local_inventory(sku, quantity, updated_at)
@@ -660,7 +755,7 @@ class StateDB:
                     quantity = excluded.quantity,
                     updated_at = excluded.updated_at
                 """,
-                (sku, quantity, now),
+                (sku, available_after, now),
             )
             if local_after != local_before:
                 self.conn.execute(
@@ -675,103 +770,28 @@ class StateDB:
                         local_after - local_before,
                         local_before,
                         local_after,
-                        f"available_transfer:{reason}",
-                        now,
-                    ),
-                )
-            if quantity != available_before:
-                self.conn.execute(
-                    """
-                    INSERT INTO order_available_movement(
-                        sku, delta, before_qty, after_qty, reason, created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        sku,
-                        quantity - available_before,
-                        available_before,
-                        quantity,
-                        str(reason),
-                        now,
-                    ),
-                )
-        return local_after, quantity
-
-    def apply_available_sale_once(
-        self,
-        channel: str,
-        event_id: str,
-        sku: str,
-        quantity: int,
-    ) -> tuple[bool, int, int]:
-        channel = str(channel)
-        event_id = str(event_id)
-        sku = str(sku).strip()
-        quantity = max(0, int(quantity))
-        if not sku or quantity <= 0:
-            return False, 0, 0
-
-        seen = self.conn.execute(
-            """
-            SELECT 1
-            FROM inventory_sale_event
-            WHERE channel = ? AND event_id = ? AND sku = ?
-            """,
-            (channel, event_id, sku),
-        ).fetchone()
-        current_row = self.conn.execute(
-            "SELECT quantity FROM order_available WHERE sku = ?",
-            (sku,),
-        ).fetchone()
-        before = (
-            int(current_row[0])
-            if current_row is not None
-            else 0
-        )
-        if seen is not None:
-            return False, before, before
-
-        after = max(0, before - quantity)
-        now = datetime.now(timezone.utc).isoformat()
-        with self.conn:
-            self.conn.execute(
-                """
-                INSERT INTO inventory_sale_event(
-                    channel, event_id, sku, quantity, created_at
-                )
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (channel, event_id, sku, quantity, now),
-            )
-            self.conn.execute(
-                """
-                INSERT INTO order_available(sku, quantity, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(sku) DO UPDATE SET
-                    quantity = excluded.quantity,
-                    updated_at = excluded.updated_at
-                """,
-                (sku, after, now),
-            )
-            if after != before:
-                self.conn.execute(
-                    """
-                    INSERT INTO order_available_movement(
-                        sku, delta, before_qty, after_qty, reason, created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        sku,
-                        after - before,
-                        before,
-                        after,
                         f"sale:{channel}:{event_id}",
                         now,
                     ),
                 )
-        return True, before, after
+            if available_after != available_before:
+                self.conn.execute(
+                    """
+                    INSERT INTO order_available_movement(
+                        sku, delta, before_qty, after_qty, reason, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sku,
+                        available_after - available_before,
+                        available_before,
+                        available_after,
+                        f"sale:{channel}:{event_id}",
+                        now,
+                    ),
+                )
+        return True, available_before, available_after
 
     def list_order_available_movements(
         self, limit: int = 50
