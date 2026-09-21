@@ -443,8 +443,11 @@ class SharedInventoryService:
                     self.local_quantity(sku),
                     self.available_quantity(sku),
                 )
-            if target > self.local_quantity(sku):
-                target = self.local_quantity(sku)
+            total_owned = (
+                self.local_quantity(sku)
+                + self.available_quantity(sku)
+            )
+            target = min(target, total_owned)
             _local, available = self.db.transfer_order_available(
                 sku,
                 target,
@@ -489,9 +492,11 @@ class SharedInventoryService:
         restored = 0
         total = 0
         for sku, wanted in snapshot.items():
-            target = min(
-                int(wanted), self.local_quantity(sku)
+            total_owned = (
+                self.local_quantity(sku)
+                + self.available_quantity(sku)
             )
+            target = min(int(wanted), total_owned)
             self.db.transfer_order_available(
                 sku, target, reason=f"{scope}_restore"
             )
