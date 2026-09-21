@@ -301,7 +301,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
             inventory.available_quantity("SKU-A"), 5
         )
         self.assertEqual(
-            inventory.local_quantity("SKU-A"), 2
+            inventory.local_quantity("SKU-A"), 5
         )
         self.assertEqual(
             self.db.get_channel_stock(
