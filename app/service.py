@@ -274,8 +274,10 @@ class StockMonitorService:
                 self.db.delete_pending_alert(alert_key)
                 return
             sku = product.vendor_code or f"WB-{nm_id}"
-            wb_reason = self.db.get_channel_suppression_reason(
-                "wb", sku
+            wb_reason = (
+                self.db.get_channel_suppression_reason("wb", sku)
+                if shared_inventory is not None
+                else None
             )
             any_shared_suppression = (
                 shared_inventory is not None
