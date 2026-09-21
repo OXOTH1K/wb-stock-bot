@@ -256,8 +256,7 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
             (7, {11: 4}),
         )
 
-    async def test_wb_suppression_zeros_shared_available_pool(self):
-
+    async def test_wb_suppression_zeros_only_wb_fbs(self):
         await self.shared.initialize()
 
         await self.shared.suppress_channel(
@@ -274,13 +273,13 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
             self.db.get_channel_stock(
                 "ozon_fbs", ("SKU-A",)
             )["SKU-A"],
-            0,
+            3,
         )
         self.assertEqual(
-            self.shared.available_quantity("SKU-A"), 0
+            self.shared.available_quantity("SKU-A"), 3
         )
         self.assertEqual(
-            self.shared.local_quantity("SKU-A"), 3
+            self.shared.local_quantity("SKU-A"), 0
         )
 
         restored = await self.shared.restore_channel(
@@ -290,10 +289,71 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.wb.wb.writes[-1], (7, {11: 3})
         )
-        self.assertEqual(self.ozon.writes[-1], ("SKU-A", 3))
+        self.assertEqual(self.ozon.writes, [])
         self.assertFalse(
             self.shared.is_suppressed("wb", "SKU-A")
         )
+
+    async def test_available_edit_preserves_ozon_marketplace_suppression(self):
+        await self.shared.initialize()
+        await self.shared.suppress_channel(
+            "ozon", "SKU-A", "marketplace_stock"
+        )
+        await self.shared.set_local_stock(
+            "SKU-A", 4, reason="restock"
+        )
+
+        await self.shared.set_available_stock(
+            "SKU-A", 5, reason="manual"
+        )
+
+        self.assertEqual(
+            self.shared.available_quantity("SKU-A"), 5
+        )
+        self.assertEqual(
+            self.shared.local_quantity("SKU-A"), 2
+        )
+        self.assertEqual(
+            self.wb.wb.writes[-1], (7, {11: 5})
+        )
+        self.assertEqual(self.ozon.writes[-1], ("SKU-A", 0))
+        self.assertEqual(
+            self.db.get_channel_suppression_reason(
+                "ozon", "SKU-A"
+            ),
+            "marketplace_stock",
+        )
+
+    async def test_sale_updates_unsuppressed_channel_only(self):
+        await self.shared.initialize()
+        await self.shared.suppress_channel(
+            "ozon", "SKU-A", "marketplace_stock"
+        )
+        posting = OzonPosting(
+            posting_number="P-SUPPRESSED",
+            order_number="1",
+            status="awaiting_packaging",
+            cutoff="",
+            warehouse_id=77,
+            products=(
+                OzonPostingProduct(
+                    "SKU-A", "Alpha", 1, 9001
+                ),
+            ),
+        )
+
+        changed = await self.shared.consume_ozon_postings(
+            [posting]
+        )
+
+        self.assertEqual(changed, {"SKU-A": 2})
+        self.assertEqual(
+            self.shared.available_quantity("SKU-A"), 2
+        )
+        self.assertEqual(
+            self.wb.wb.writes[-1], (7, {11: 2})
+        )
+        self.assertEqual(self.ozon.writes[-1], ("SKU-A", 0))
 
     async def test_mass_zero_returns_available_to_local_and_restore_moves_it_back(self):
         await self.shared.initialize()
@@ -406,7 +466,7 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
             self.shared.local_quantity("SKU-A"), 2
         )
 
-    async def test_ozon_suppression_zeros_both_fbs_and_restores_snapshot(self):
+    async def test_ozon_suppression_zeros_only_ozon_fbs(self):
         await self.shared.initialize()
 
         await self.shared.suppress_channel(
@@ -417,14 +477,12 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
             self.shared.is_suppressed("ozon", "SKU-A")
         )
         self.assertEqual(
-            self.shared.available_quantity("SKU-A"), 0
+            self.shared.available_quantity("SKU-A"), 3
         )
         self.assertEqual(
-            self.shared.local_quantity("SKU-A"), 3
+            self.shared.local_quantity("SKU-A"), 0
         )
-        self.assertEqual(
-            self.wb.wb.writes[-1], (7, {11: 0})
-        )
+        self.assertEqual(self.wb.wb.writes, [])
         self.assertEqual(self.ozon.writes[-1], ("SKU-A", 0))
 
         restored = await self.shared.restore_channel(
@@ -437,9 +495,7 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.shared.local_quantity("SKU-A"), 0
         )
-        self.assertEqual(
-            self.wb.wb.writes[-1], (7, {11: 3})
-        )
+        self.assertEqual(self.wb.wb.writes, [])
         self.assertEqual(self.ozon.writes[-1], ("SKU-A", 3))
         self.assertFalse(
             self.shared.is_suppressed("ozon", "SKU-A")
