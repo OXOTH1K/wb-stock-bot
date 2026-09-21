@@ -488,13 +488,14 @@ class OzonIntegration:
             ).get(sku, 0)
         )
         local = self.inventory.local_quantity(sku)
+        available = self.inventory.available_quantity(sku)
         reason = self.db.get_channel_suppression_reason(
             "ozon", sku
         )
         if (
             fbs_qty != 0
             or fbo_qty != 0
-            or local > 0
+            or available > 0
             or reason == "mass"
         ):
             return
@@ -515,8 +516,9 @@ class OzonIntegration:
                 "🔴 Товар закончился в OZON FBS и FBO\n"
                 f"Артикул продавца: {sku}\n"
                 "OZON FBS: 0 шт. | OZON FBO: 0 шт.\n"
-                "Основной склад: 0 шт.\n\n"
-                "Добавить остаток на основной склад?"
+                f"Мой склад: {local} шт.\n"
+                "Доступно для заказа: 0 шт.\n\n"
+                "Перенести 1 или 5 шт. из «Моего склада» в «Доступно для заказа»?"
             ),
             reply_markup=keyboard,
         )
@@ -548,6 +550,7 @@ class OzonIntegration:
                 self._clear_stock_decisions(sku)
 
             local = self.inventory.local_quantity(sku)
+            available = self.inventory.available_quantity(sku)
             reason = self.db.get_channel_suppression_reason(
                 "ozon", sku
             )
@@ -556,7 +559,7 @@ class OzonIntegration:
                 int(old_fbo) == 0
                 and new_fbo > 0
                 and new_fbs > 0
-                and local > 0
+                and available > 0
                 and reason is None
             ):
                 keyboard = self._stock_keyboard(sku, "zero")
@@ -575,11 +578,12 @@ class OzonIntegration:
                         (
                             "🟦 Товар появился на складе OZON\n"
                             f"Артикул продавца: {sku}\n"
-                            f"Основной склад: {local} шт.\n"
+                            f"Мой склад: {local} шт.\n"
+                            f"Доступно для заказа: {available} шт.\n"
                             f"OZON FBS: {new_fbs} шт.\n"
                             f"OZON FBO: было 0 шт. → стало {new_fbo} шт.\n\n"
-                            "Обнулить только OZON FBS? "
-                            "WB FBS останется равным основному складу."
+                            "Обнулить «Доступно для заказа»? "
+                            "Тогда WB FBS и OZON FBS станут 0, а товар вернётся на «Мой склад»."
                         ),
                         reply_markup=keyboard,
                     )
@@ -603,6 +607,11 @@ class OzonIntegration:
                 and reason == "marketplace_stock"
                 and local > 0
             ):
+                restore_qty = int(
+                    self.db.get_available_snapshot(
+                        "marketplace:ozon"
+                    ).get(sku, 0)
+                )
                 keyboard = self._stock_keyboard(sku, "restore")
                 if (
                     keyboard is not None
@@ -619,9 +628,9 @@ class OzonIntegration:
                         (
                             "🔵 Товар закончился на складе OZON\n"
                             f"Артикул продавца: {sku}\n"
-                            f"Актуальный остаток основного склада: "
-                            f"{local} шт.\n\n"
-                            "Вернуть этот актуальный остаток на OZON FBS?"
+                            f"Мой склад: {local} шт.\n"
+                            f"До обнуления было доступно: {restore_qty} шт.\n\n"
+                            "Вернуть сохранённое количество в «Доступно для заказа» и оба FBS?"
                         ),
                         reply_markup=keyboard,
                     )
@@ -645,6 +654,7 @@ class OzonIntegration:
             fbs_qty = int(fbs.get(sku, 0))
             fbo_qty = int(fbo.get(sku, 0))
             local = self.inventory.local_quantity(sku)
+            available = self.inventory.available_quantity(sku)
             reason = self.db.get_channel_suppression_reason(
                 "ozon", sku
             )
@@ -652,7 +662,7 @@ class OzonIntegration:
             if (
                 fbs_qty > 0
                 and fbo_qty > 0
-                and local > 0
+                and available > 0
                 and reason is None
             ):
                 if self._stock_decision_matches(
@@ -671,7 +681,7 @@ class OzonIntegration:
                         f"Артикул продавца: {sku}\n"
                         f"OZON FBS: {fbs_qty} шт. | "
                         f"OZON FBO: {fbo_qty} шт.\n\n"
-                        "Обнулить OZON FBS?"
+                        "Обнулить «Доступно для заказа» и оба FBS?"
                     ),
                     reply_markup=keyboard,
                 )
@@ -696,13 +706,15 @@ class OzonIntegration:
                         (
                             "🔎 /status: товар закончился на складе OZON\n"
                             f"Артикул продавца: {sku}\n"
-                            f"Актуальный основной склад: {local} шт.\n\n"
-                            "Вернуть остаток на OZON FBS?"
+                            f"Мой склад: {local} шт.\n"
+                            f"Сохранено до обнуления: "
+                            f"{int(self.db.get_available_snapshot('marketplace:ozon').get(sku, 0))} шт.\n\n"
+                            "Вернуть в «Доступно для заказа» и оба FBS?"
                         ),
                         reply_markup=keyboard,
                     )
                     continue
-                if local <= 0:
+                if available <= 0:
                     if self._stock_decision_matches(
                         sku, "add", fbs_qty, fbo_qty
                     ):
@@ -717,8 +729,9 @@ class OzonIntegration:
                             "🔎 /status: товар закончился "
                             "в OZON FBS и FBO\n"
                             f"Артикул продавца: {sku}\n"
-                            "Основной склад: 0 шт.\n\n"
-                            "Добавить остаток на основной склад?"
+                            f"Мой склад: {local} шт.\n"
+                            "Доступно для заказа: 0 шт.\n\n"
+                            "Перенести 1 или 5 шт. в «Доступно для заказа»?"
                         ),
                         reply_markup=keyboard,
                     )
@@ -770,8 +783,8 @@ class OzonIntegration:
             await self.tg.send_message(
                 chat_id,
                 (
-                    "⚠️ Обнулить OZON FBS для всех товаров?\n"
-                    "Основной локальный склад и WB FBS не изменятся."
+                    "⚠️ Обнулить «Доступно для заказа» для всех товаров?\n"
+                    "Количество вернётся на «Мой склад», а WB/OZON FBS станут 0."
                 ),
                 reply_markup={
                     "inline_keyboard": [
@@ -811,8 +824,7 @@ class OzonIntegration:
         await self.tg.send_message(
             chat_id,
             (
-                f"♻️ Восстановить OZON FBS из актуального "
-                f"основного склада?\n"
+                f"♻️ Восстановить сохранённое «Доступно для заказа»?\n"
                 f"Товаров: {len(mass_skus)}, суммарно: {total} шт."
             ),
             reply_markup={
@@ -851,8 +863,8 @@ class OzonIntegration:
             message_id,
             original,
             (
-                "✅ Все остатки OZON FBS обнулены.\n"
-                "Основной склад и WB FBS не изменены.\n"
+                "✅ «Доступно для заказа» обнулено.\n"
+                "Количество возвращено на «Мой склад», WB/OZON FBS установлены в 0.\n"
                 f"Товаров: {count}, до обнуления: {before} шт."
             ),
         )
@@ -883,8 +895,7 @@ class OzonIntegration:
             message_id,
             original,
             (
-                "✅ OZON FBS восстановлен из актуального "
-                "основного склада.\n"
+                "✅ «Доступно для заказа» восстановлено; WB/OZON FBS синхронизированы.\n"
                 f"Товаров: {restored}, суммарно: {total} шт."
             ),
         )
@@ -1158,7 +1169,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⏭ Остаток на основной склад не добавлять.",
+                        "⏭ Не переносить товар в «Доступно для заказа».",
                     )
                     return True
 
@@ -1187,8 +1198,8 @@ class OzonIntegration:
                         message_id,
                         original,
                         (
-                            "✅ OZON FBS обнулён. "
-                            "WB FBS и основной склад не изменены."
+                            "✅ «Доступно для заказа» обнулено. "
+                            "Количество возвращено на «Мой склад», WB/OZON FBS установлены в 0."
                         ),
                     )
                     return True
@@ -1222,7 +1233,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        f"✅ На OZON FBS возвращён актуальный остаток: {quantity} шт.",
+                        f"✅ В «Доступно для заказа» восстановлено {quantity} шт.; WB/OZON FBS синхронизированы.",
                     )
                     return True
 
@@ -1238,20 +1249,22 @@ class OzonIntegration:
                             ),
                         )
                         return True
-                    local = self.inventory.local_quantity(sku)
-                    if local > 0:
+                    available = self.inventory.available_quantity(
+                        sku
+                    )
+                    if available > 0:
                         await self._finish(
                             chat_id,
                             message_id,
                             original,
                             (
-                                "ℹ️ Действие отменено: основной склад "
-                                f"уже равен {local} шт."
+                                "ℹ️ Действие отменено: «Доступно для заказа» "
+                                f"уже равно {available} шт."
                             ),
                         )
                         return True
                     quantity = 1 if action == "add1" else 5
-                    await self.inventory.set_local_stock(
+                    await self.inventory.set_available_stock(
                         sku,
                         quantity,
                         reason="telegram_ozon_stock_add",
@@ -1261,8 +1274,8 @@ class OzonIntegration:
                         message_id,
                         original,
                         (
-                            f"✅ Основной склад установлен в {quantity} шт. "
-                            "Активные WB/OZON FBS синхронизированы."
+                            f"✅ В «Доступно для заказа» перенесено {quantity} шт. "
+                            "WB/OZON FBS синхронизированы."
                         ),
                     )
                     return True
