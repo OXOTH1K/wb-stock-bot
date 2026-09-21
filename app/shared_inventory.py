@@ -293,9 +293,16 @@ class SharedInventoryService:
                 sku, quantity, reason=reason
             )
             self._clear_wb_decisions(sku)
-            if available > 0:
-                self.db.clear_channel_suppressed("wb", sku)
-                self.db.clear_channel_suppressed("ozon", sku)
+            # An explicit available-stock edit supersedes any pending
+            # automatic or mass restoration for this SKU.
+            for scope in (
+                "mass_shared",
+                "marketplace:wb",
+                "marketplace:ozon",
+            ):
+                self.db.clear_available_snapshot(scope, sku)
+            self.db.clear_channel_suppressed("wb", sku)
+            self.db.clear_channel_suppressed("ozon", sku)
             await self.sync_sku(
                 sku,
                 raise_errors=True,
@@ -510,7 +517,13 @@ class SharedInventoryService:
 
     async def suppress_wb_mass(self) -> tuple[int, int]:
         async with self._lock:
-            skus = sorted(self.all_skus())
+            skus = [
+                sku
+                for sku in sorted(self.all_skus())
+                if self.available_quantity(sku) > 0
+                and not self.db.is_channel_suppressed("wb", sku)
+                and not self.db.is_channel_suppressed("ozon", sku)
+            ]
             for sku in skus:
                 self.db.set_channel_suppressed(
                     "wb", sku, "mass"
@@ -538,7 +551,13 @@ class SharedInventoryService:
                 "OZON integration is not configured"
             )
         async with self._lock:
-            skus = sorted(self.all_skus())
+            skus = [
+                sku
+                for sku in sorted(self.all_skus())
+                if self.available_quantity(sku) > 0
+                and not self.db.is_channel_suppressed("wb", sku)
+                and not self.db.is_channel_suppressed("ozon", sku)
+            ]
             for sku in skus:
                 self.db.set_channel_suppressed(
                     "ozon", sku, "mass"
