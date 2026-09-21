@@ -293,16 +293,23 @@ class SharedInventoryService:
                 sku, quantity, reason=reason
             )
             self._clear_wb_decisions(sku)
-            # An explicit available-stock edit supersedes any pending
-            # automatic or mass restoration for this SKU.
-            for scope in (
-                "mass_shared",
-                "marketplace:wb",
-                "marketplace:ozon",
-            ):
-                self.db.clear_available_snapshot(scope, sku)
-            self.db.clear_channel_suppressed("wb", sku)
-            self.db.clear_channel_suppressed("ozon", sku)
+            # An explicit available-stock edit supersedes only mass-zero
+            # restoration. Platform-specific marketplace_stock suppression
+            # must remain in place until that marketplace warehouse is empty.
+            self.db.clear_available_snapshot("mass_shared", sku)
+            for channel in ("wb", "ozon"):
+                if (
+                    self.db.get_channel_suppression_reason(
+                        channel, sku
+                    )
+                    == "mass"
+                ):
+                    self.db.clear_channel_suppressed(channel, sku)
+            # Old releases stored per-platform restore snapshots. They are no
+            # longer needed because platform restoration uses the current
+            # shared available quantity.
+            self.db.clear_available_snapshot("marketplace:wb", sku)
+            self.db.clear_available_snapshot("marketplace:ozon", sku)
             await self.sync_sku(
                 sku,
                 raise_errors=True,
@@ -361,6 +368,22 @@ class SharedInventoryService:
             return
         quantity = self.available_quantity(sku)
         errors: list[str] = []
+        wb_target = (
+            0
+            if self.db.get_channel_suppression_reason(
+                "wb", sku
+            )
+            == "marketplace_stock"
+            else quantity
+        )
+        ozon_target = (
+            0
+            if self.db.get_channel_suppression_reason(
+                "ozon", sku
+            )
+            == "marketplace_stock"
+            else quantity
+        )
 
         if skip_channel != "wb":
             product = self._wb_by_sku().get(sku)
@@ -370,9 +393,9 @@ class SharedInventoryService:
                         product.nm_id, 0
                     )
                 )
-                if force or current != quantity:
+                if force or current != wb_target:
                     try:
-                        await self._write_wb(sku, quantity)
+                        await self._write_wb(sku, wb_target)
                     except Exception as exc:
                         errors.append(f"WB: {exc}")
 
@@ -384,9 +407,13 @@ class SharedInventoryService:
             current = self.db.get_channel_stock(
                 "ozon_fbs", (sku,)
             ).get(sku)
-            if force or current is None or int(current) != quantity:
+            if (
+                force
+                or current is None
+                or int(current) != ozon_target
+            ):
                 try:
-                    await self._write_ozon(sku, quantity)
+                    await self._write_ozon(sku, ozon_target)
                 except Exception as exc:
                     errors.append(f"OZON: {exc}")
 
@@ -405,69 +432,42 @@ class SharedInventoryService:
         sku: str,
         reason: str = "marketplace_stock",
     ) -> None:
-        """Compatibility action: zero the shared available pool.
-
-        Since WB and OZON FBS now mirror one shared sellable quantity, a
-        marketplace-stock suppression zeros both FBS channels and returns the
-        sellable units to the physical local warehouse.
-        """
+        """Suppress one marketplace FBS without changing shared inventory."""
         if channel not in {"wb", "ozon"}:
             raise ValueError(f"Unknown channel: {channel}")
         async with self._lock:
-            before = self.available_quantity(sku)
-            if before > 0:
-                self.db.save_available_snapshot(
-                    f"marketplace:{channel}",
-                    sku,
-                    before,
-                )
-                self.db.transfer_order_available(
-                    sku,
-                    0,
-                    reason=f"{channel}_{reason}_zero",
-                )
             self.db.set_channel_suppressed(
                 channel, sku, reason
             )
-            await self.sync_sku(
-                sku, raise_errors=True, force=True
+            # Remove stale snapshots left by the short-lived shared-zero
+            # implementation. Platform restore now uses current available.
+            self.db.clear_available_snapshot(
+                f"marketplace:{channel}", sku
             )
+            if channel == "wb":
+                await self._write_wb(sku, 0)
+            else:
+                await self._write_ozon(sku, 0)
 
     async def restore_channel(
         self,
         channel: str,
         sku: str,
     ) -> int:
+        """Restore one marketplace FBS to current shared available stock."""
         if channel not in {"wb", "ozon"}:
             raise ValueError(f"Unknown channel: {channel}")
         async with self._lock:
-            snapshot = self.db.get_available_snapshot(
-                f"marketplace:{channel}"
-            )
-            target = int(snapshot.get(sku, 0))
-            if target <= 0:
-                target = min(
-                    self.local_quantity(sku),
-                    self.available_quantity(sku),
-                )
-            total_owned = (
-                self.local_quantity(sku)
-                + self.available_quantity(sku)
-            )
-            target = min(target, total_owned)
-            _local, available = self.db.transfer_order_available(
-                sku,
-                target,
-                reason=f"{channel}_marketplace_restore",
-            )
+            quantity = self.available_quantity(sku)
+            if channel == "wb":
+                await self._write_wb(sku, quantity)
+            else:
+                await self._write_ozon(sku, quantity)
             self.db.clear_channel_suppressed(channel, sku)
             self.db.clear_available_snapshot(
                 f"marketplace:{channel}", sku
             )
-            await self.sync_sku(
-                sku, raise_errors=True, force=True
-            )
-            return available
+            return quantity
 
     async def _suppress_mass(
         self, scope: str, skus: list[str]
