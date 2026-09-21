@@ -502,26 +502,27 @@ class OzonClient:
             },
         )
 
-        # Ozon explicitly notes that HTTP 200 does not guarantee successful
-        # assembly. Verify the posting state without repeating the write call.
-        for attempt in range(3):
+        # Ozon applies the status transition asynchronously. HTTP 200 from
+        # /ship can be visible through /get only several seconds later.
+        # Verify the state without repeating the write call: resending /ship
+        # while the first transition is in flight can create false conflicts.
+        verification_delays = (0.5, 1.0, 2.0, 3.0, 5.0)
+        for attempt in range(len(verification_delays) + 1):
             current = await self.get_posting(posting.posting_number)
-            if current.status != "awaiting_packaging":
-                if current.substatus == "ship_failed":
-                    raise OzonAPIError(
-                        409,
-                        "Ozon returned ship_failed after assembly request",
-                    )
-                return
             if current.substatus == "ship_failed":
                 raise OzonAPIError(
                     409,
                     "Ozon returned ship_failed after assembly request",
                 )
-            if attempt < 2:
-                await asyncio.sleep(0.5)
+            if current.status != "awaiting_packaging":
+                return
+            if attempt < len(verification_delays):
+                await asyncio.sleep(verification_delays[attempt])
 
         raise OzonAPIError(
             409,
-            "posting is still awaiting_packaging after assembly request",
+            (
+                "posting is still awaiting_packaging after assembly request "
+                f"and {sum(verification_delays):.1f}s verification wait"
+            ),
         )
