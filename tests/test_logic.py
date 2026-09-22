@@ -38,22 +38,22 @@ class LogicTests(unittest.TestCase):
     def test_stock_marker_is_green_when_fbs_has_stock(self):
         text = self._service_for_stock_format(3, 0)._format_stocks_page(1)
         self.assertIn("🟢 SKU-100", text)
-        self.assertIn("   3    0", text)
+        self.assertIn("     3    0", text)
 
     def test_stock_marker_is_green_when_wb_has_stock(self):
         text = self._service_for_stock_format(0, 2)._format_stocks_page(1)
         self.assertIn("🟢 SKU-100", text)
-        self.assertIn("   0    2", text)
+        self.assertIn("     0    2", text)
 
     def test_stock_marker_is_red_only_when_everywhere_zero(self):
         text = self._service_for_stock_format(0, 0)._format_stocks_page(1)
         self.assertIn("🔴 SKU-100", text)
-        self.assertIn("   0    0", text)
+        self.assertIn("     0    0", text)
 
     def test_stock_marker_is_purple_when_both_have_stock(self):
         text = self._service_for_stock_format(3, 2)._format_stocks_page(1)
         self.assertIn("🟣 SKU-100", text)
-        self.assertIn("   3    2", text)
+        self.assertIn("     3    2", text)
 
     def test_stock_page_hides_numeric_wb_article(self):
         text = self._service_for_stock_format(3, 0)._format_stocks_page(1)
@@ -64,8 +64,8 @@ class LogicTests(unittest.TestCase):
         text = self._service_for_stock_format(3, 2)._format_stocks_page(1)
         self.assertIn("<pre>", text)
         self.assertIn("Артикул", text)
-        self.assertIn("FBS", text)
-        self.assertIn("WB", text)
+        self.assertIn("WB FBS", text)
+        self.assertIn("FBW", text)
 
     def test_stock_keyboard_has_next_button(self):
         service = object.__new__(StockMonitorService)
