@@ -197,7 +197,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         await service._notify_wb_appearances([(100, 0, 4)])
         self.assertEqual(len(service.tg.messages), 1)
         text = service.tg.messages[0][1]
-        self.assertIn("Товар появился на складе WB", text)
+        self.assertIn("Товар появился на FBW", text)
         self.assertIn("Доступно для заказа: 3 шт.", text)
         self.assertIn("было 0 шт. → стало 4 шт.", text)
         self.assertNotIn("Артикул WB", text)
@@ -235,7 +235,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         text = service.tg.messages[0][1]
         self.assertIn("Товар закончился в доступном пуле и на WB", text)
         self.assertIn("Доступно для заказа: 0 шт.", text)
-        self.assertIn("На складах WB: 0 шт.", text)
+        self.assertIn("На FBW: 0 шт.", text)
 
     async def test_total_depletion_first_combined_snapshot_is_baseline(self):
         service = self._service(0)
