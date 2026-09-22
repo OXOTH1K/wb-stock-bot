@@ -162,7 +162,7 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(count, 1)
         self.assertEqual(len(tg.sent), 1)
-        self.assertIn("/status: заказ требует решения", tg.sent[0][1])
+        self.assertIn("/status: WB-заказ требует решения", tg.sent[0][1])
         buttons = tg.sent[0][2]["reply_markup"]["inline_keyboard"]
         self.assertTrue(any(row[0]["callback_data"] == "ordnew:501" for row in buttons))
 
