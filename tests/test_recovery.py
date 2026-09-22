@@ -115,7 +115,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.db.list_pending_alerts(), [])
         self.assertEqual(len(tg.broadcasts), 1)
-        self.assertIn("Товар появился на складе WB", tg.broadcasts[0][1])
+        self.assertIn("Товар появился на FBW", tg.broadcasts[0][1])
 
     async def test_stale_pending_stock_alert_is_discarded(self):
         tg = FlakyTelegram()
@@ -148,7 +148,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(recovered), 1)
         self.assertEqual(len(tg.broadcasts), 1)
-        self.assertIn("Заказ найден при сверке", tg.broadcasts[0][1])
+        self.assertIn("WB-заказ найден при сверке", tg.broadcasts[0][1])
         self.assertIsNotNone(monitor._state(9001))
         self.assertGreaterEqual(wb.last_history_params["dateFrom"], int((old - timedelta(seconds=1)).timestamp()))
 
