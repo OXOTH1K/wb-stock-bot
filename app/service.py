@@ -108,7 +108,7 @@ class StockMonitorService:
                 "✅ Мониторинг остатков запущен\n"
                 f"Склад продавца: {self.warehouse.name}\n"
                 f"Товаров: {len(self.products)}\n"
-                f"С нулём на FBS: {zeros_fbs}\n"
+                f"С нулём на WB FBS: {zeros_fbs}\n"
                 f"С нулём на FBW: {wb_zero_text}\n\n"
                 "Команды: /stocks_wb, /stocks_ozon, /zero, /status, "
                 "/fbs_zero_all, /fbs_restore, /ozon_fbs_zero_all, "
@@ -315,10 +315,10 @@ class StockMonitorService:
                     text = (
                         "[[WB]] 🔴 Товар закончился на FBW\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        "На вашем складе FBS: 0 шт.\n"
+                        "WB FBS: 0 шт.\n"
                         "На FBW: 0 шт.\n\n"
-                        f"Перед обнулением FBS было сохранено: {saved_total} шт.\n"
-                        "Вернуть сохранённый остаток на FBS?"
+                        f"Перед обнулением WB FBS было сохранено: {saved_total} шт.\n"
+                        "Вернуть сохранённый остаток на WB FBS?"
                     )
                     keyboard = self._saved_restore_keyboard(nm_id, saved_total)
                 else:
@@ -437,7 +437,7 @@ class StockMonitorService:
                     "/stocks_wb — остатки WB FBS + FBW\n"
                     "/stocks_wb 2 — открыть страницу WB\n"
                     "/stocks_ozon — остатки Ozon FBS + FBO\n"
-                    "/stocks_ozon 2 — открыть страницу OZON\n"
+                    "/stocks_ozon 2 — открыть страницу Ozon\n"
                     "/stocks_main — остатки «Моего склада»\n"
                     "/stocks_main 2 — открыть страницу «Моего склада»\n"
                     "/stock <артикул продавца> — найти товар\n"
@@ -975,7 +975,7 @@ class StockMonitorService:
         await self.refresh_fbs(notify=True)
         actual = self.fbs_stock.get(nm_id, 0)
         status = (
-            f"✅ На FBS установлено {quantity} шт."
+            f"✅ На WB FBS установлено {quantity} шт."
             if actual == quantity
             else (
                 f"✅ Команда на установку {quantity} шт. отправлена в WB. "
@@ -1038,7 +1038,7 @@ class StockMonitorService:
                 message_id,
                 original_text,
                 (
-                    "✅ Только WB FBS обнулён. "
+                    "✅ Только WB WB FBS обнулён. "
                     "«Доступно для заказа», Ozon FBS и «Мой склад» не изменены."
                 ),
             )
@@ -1055,7 +1055,7 @@ class StockMonitorService:
         await self.refresh_fbs(notify=True)
         actual = self.fbs_stock.get(nm_id, 0)
         status = (
-            "✅ FBS обнулён."
+            "✅ WB FBS обнулён."
             if actual == 0
             else (
                 "✅ Команда на обнуление отправлена в WB. "
@@ -1160,7 +1160,7 @@ class StockMonitorService:
             chat_id,
             message_id,
             original_text,
-            f"✅ На FBS возвращён сохранённый остаток: {total} шт.",
+            f"✅ На WB FBS возвращён сохранённый остаток: {total} шт.",
         )
 
     async def _zero_all_fbs(
@@ -1524,11 +1524,11 @@ class StockMonitorService:
             name = (product.vendor_code or product.title or "без артикула")[:45]
             zero_at = []
             if fbs == 0:
-                zero_at.append("FBS")
+                zero_at.append("WB FBS")
             if wb == 0:
                 zero_at.append("WB")
             lines.append(
-                f"• {name} | ноль: {', '.join(zero_at)} | FBS {fbs} | WB {wb}"
+                f"• {name} | ноль: {', '.join(zero_at)} | WB FBS {fbs} | FBW {wb}"
             )
         return "\n".join(lines)
 
@@ -1715,7 +1715,7 @@ class StockMonitorService:
             f"Склад продавца: {warehouse}\n"
             f"Товаров: {len(self.products)}\n"
             f"Каталог: {format_dt(self.catalog_updated_at)}\n"
-            f"FBS остатки: {format_dt(self.fbs_updated_at)}\n"
+            f"WB FBS остатки: {format_dt(self.fbs_updated_at)}\n"
             f"WB остатки: {format_dt(self.wb_updated_at)}\n"
             f"Интервалы: FBS {self.settings.fbs_check_interval // 60} мин, "
             f"WB {self.settings.wb_check_interval // 60} мин"
