@@ -412,7 +412,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.shipped, [posting_number])
         self.assertEqual(self.ozon._state(posting_number), "assembled")
         self.assertNotIn(posting_number, self.ozon.current_pending)
-        self.assertIn("OZON-заказ собран", self.tg.edits[-1][2])
+        self.assertIn("Ozon-заказ собран", self.tg.edits[-1][2])
 
         await self.ozon.handle_callback(
             123,
