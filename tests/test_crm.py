@@ -215,9 +215,9 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('title="Сохранить «Мой склад»"', INDEX_HTML)
         self.assertIn('title="Сохранить «Доступно для заказа»"', INDEX_HTML)
         self.assertIn("Доступно для заказа", INDEX_HTML)
-        self.assertIn("Склад OZON (FBO)", INDEX_HTML)
+        self.assertIn("FBO", INDEX_HTML)
         self.assertIn("WB FBS намеренно 0", INDEX_HTML)
-        self.assertIn("OZON FBS намеренно 0", INDEX_HTML)
+        self.assertIn("Ozon FBS намеренно 0", INDEX_HTML)
 
     async def test_network_allowlist_accepts_lan_and_rejects_other_networks(self):
         self.crm._allowed_networks = (
