@@ -96,6 +96,63 @@ class TelegramBot:
         parts.append(text[cursor:])
         return "".join(parts), (entities or None), used_custom
 
+    def _restore_brand_tokens_from_entities(
+        self,
+        text: str,
+        entities: Iterable[dict[str, Any]] | None,
+    ) -> str:
+        """Restore internal brand tokens from Telegram custom-emoji entities.
+
+        Telegram callback queries return the visible fallback character in
+        message.text and keep the custom emoji identity only in
+        message.entities. Reconstructing the token here lets later
+        editMessageText calls render the same branded custom emoji again.
+        """
+        if not text or not entities:
+            return text
+
+        brand_by_id = {
+            emoji_id: brand
+            for brand, (_fallback, emoji_id) in self._brand_emoji.items()
+            if emoji_id
+        }
+        if not brand_by_id:
+            return text
+
+        encoded = text.encode("utf-16-le")
+        utf16_units = len(encoded) // 2
+        replacements: list[tuple[int, int, str]] = []
+
+        for entity in entities:
+            if str(entity.get("type") or "") != "custom_emoji":
+                continue
+            emoji_id = str(entity.get("custom_emoji_id") or "")
+            brand = brand_by_id.get(emoji_id)
+            if brand is None:
+                continue
+            try:
+                start = int(entity.get("offset"))
+                length = int(entity.get("length"))
+            except (TypeError, ValueError):
+                continue
+            end = start + length
+            if start < 0 or length <= 0 or end > utf16_units:
+                continue
+            replacements.append((start, end, f"[[{brand}]]"))
+
+        for start, end, replacement in sorted(
+            replacements,
+            key=lambda item: item[0],
+            reverse=True,
+        ):
+            encoded = (
+                encoded[: start * 2]
+                + replacement.encode("utf-16-le")
+                + encoded[end * 2 :]
+            )
+
+        return encoded.decode("utf-16-le")
+
     async def __aenter__(self) -> "TelegramBot":
         self._session = aiohttp.ClientSession(timeout=self._timeout)
         return self
@@ -270,6 +327,10 @@ class TelegramBot:
                             message_id = message.get("message_id")
                             data = callback.get("data")
                             message_text = str(message.get("text") or "")
+                            message_text = self._restore_brand_tokens_from_entities(
+                                message_text,
+                                message.get("entities") or [],
+                            )
                             if chat_id is not None and message_id is not None and data:
                                 await callback_handler(
                                     int(chat_id), int(message_id), str(data), message_text

@@ -50,6 +50,93 @@ class BrandEmojiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(entities)
         self.assertTrue(used_custom)
 
+    def test_callback_entity_restores_brand_token(self):
+        bot = TelegramBot(
+            "token",
+            wb_emoji_id="111",
+            ozon_emoji_id="222",
+        )
+
+        restored = bot._restore_brand_tokens_from_entities(
+            "🟣 Новый WB FBS-заказ",
+            [
+                {
+                    "type": "custom_emoji",
+                    "offset": 0,
+                    "length": 2,
+                    "custom_emoji_id": "111",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            restored,
+            "[[WB]] Новый WB FBS-заказ",
+        )
+
+    def test_callback_entity_restore_uses_utf16_offsets(self):
+        bot = TelegramBot(
+            "token",
+            wb_emoji_id="111",
+        )
+
+        restored = bot._restore_brand_tokens_from_entities(
+            "🙂 🟣 WB",
+            [
+                {
+                    "type": "custom_emoji",
+                    "offset": 3,
+                    "length": 2,
+                    "custom_emoji_id": "111",
+                }
+            ],
+        )
+
+        self.assertEqual(restored, "🙂 [[WB]] WB")
+
+    async def test_callback_edit_renders_custom_emoji_again(self):
+        class RecordingTelegram(TelegramBot):
+            def __init__(self):
+                super().__init__("token", wb_emoji_id="111")
+                self.payloads = []
+
+            async def _call(self, method, payload):
+                self.payloads.append((method, dict(payload)))
+                return None
+
+        bot = RecordingTelegram()
+        original = bot._restore_brand_tokens_from_entities(
+            "🟣 Новый WB FBS-заказ",
+            [
+                {
+                    "type": "custom_emoji",
+                    "offset": 0,
+                    "length": 2,
+                    "custom_emoji_id": "111",
+                }
+            ],
+        )
+
+        await bot.edit_message_text(
+            123,
+            456,
+            original + "\n\n✅ Заказ обработан.",
+        )
+
+        payload = bot.payloads[-1][1]
+        self.assertEqual(
+            payload["text"],
+            "🟣 Новый WB FBS-заказ\n\n✅ Заказ обработан.",
+        )
+        self.assertEqual(
+            payload["entities"][0]["custom_emoji_id"],
+            "111",
+        )
+        self.assertEqual(
+            payload["entities"][0]["offset"],
+            0,
+        )
+
     async def test_rejected_custom_emoji_retries_with_unicode_fallback(self):
         class RejectingTelegram(TelegramBot):
             def __init__(self):
