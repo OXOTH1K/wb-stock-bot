@@ -1601,7 +1601,7 @@ class StockMonitorService:
                         "[[WB]] 🔎 /status: товар есть одновременно на WB FBS и FBW\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
                         f"WB FBS: {fbs_qty} шт. | FBW: {wb_qty} шт.\n\n"
-                        "Обнулить остаток на FBS?"
+                        "Обнулить WB FBS?"
                     ),
                     reply_markup=self._wb_appearance_action_keyboard(nm_id),
                 )
@@ -1682,7 +1682,7 @@ class StockMonitorService:
                             "[[WB]] 🔎 /status: товар закончился на FBW\n"
                             f"Артикул продавца: {product.vendor_code or '—'}\n"
                             "WB FBS: 0 шт. | FBW: 0 шт.\n\n"
-                            f"Сохранённый FBS-остаток: {restore_qty} шт.\n"
+                            f"Сохранённый WB FBS-остаток: {restore_qty} шт.\n"
                             "Вернуть остаток на WB FBS?"
                         )
                     keyboard = self._saved_restore_keyboard(
