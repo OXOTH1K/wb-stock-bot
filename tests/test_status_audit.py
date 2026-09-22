@@ -90,8 +90,8 @@ class StatusAuditTests(unittest.IsolatedAsyncioTestCase):
         messages = {text: kwargs for _, text, kwargs in tg.sent}
         all_text = "\n".join(messages)
 
-        self.assertIn("товар есть одновременно на FBS и WB", all_text)
-        self.assertIn("Сохранённый FBS-остаток: 4 шт.", all_text)
+        self.assertIn("товар есть одновременно на WB FBS и FBW", all_text)
+        self.assertIn("Сохранённый WB FBS-остаток: 4 шт.", all_text)
         self.assertIn("товар закончился везде", all_text)
 
         callbacks = [
