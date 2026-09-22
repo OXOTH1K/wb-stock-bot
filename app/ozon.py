@@ -407,7 +407,7 @@ class OzonIntegration:
             f"[[OZON]] <b>Остатки Ozon</b> — {page}/{pages} · "
             f"товаров: {total}\n\n"
             f"<pre>{escaped_table}</pre>\n"
-            "<i>FBO — остаток в FBO.</i>"
+            "<i>FBO — склад Ozon.</i>"
         )
 
     def _stocks_keyboard(self, page: int) -> dict:
@@ -1142,7 +1142,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⚠️ Товар OZON больше не найден в каталоге.",
+                        "⚠️ Товар Ozon больше не найден в каталоге.",
                     )
                     return True
 
