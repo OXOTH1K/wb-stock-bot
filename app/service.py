@@ -438,8 +438,11 @@ class StockMonitorService:
                     "/stocks_wb 2 — открыть страницу WB\n"
                     "/stocks_ozon — остатки OZON FBS + FBO\n"
                     "/stocks_ozon 2 — открыть страницу OZON\n"
+                    "/stocks_main — остатки «Моего склада»\n"
+                    "/stocks_main 2 — открыть страницу «Моего склада»\n"
                     "/stock <артикул продавца> — найти товар\n"
                     "/set <артикул> <количество> — установить «Доступно для заказа»\n"
+                    "/set_main <артикул> +N|-N — изменить «Мой склад»\n"
                     "/zero — товары с нулевым остатком\n"
                     "/fbs_zero_all — сохранить и обнулить весь FBS\n"
                     "/fbs_restore — восстановить WB FBS\n"
@@ -477,13 +480,28 @@ class StockMonitorService:
                 )
                 await self.refresh_for_command()
                 await self._send_stocks_page(chat_id, page)
+            elif command == "/stocks_main":
+                page = 1
+                if args:
+                    try:
+                        page = max(1, int(args[0]))
+                    except ValueError:
+                        await self.tg.send_message(
+                            chat_id,
+                            "Формат: /stocks_main или /stocks_main 2",
+                        )
+                        return
+                if self.shared_inventory is None:
+                    raise RuntimeError("Общий склад не инициализирован")
+                await self._send_main_stocks_page(chat_id, page)
             elif command == "/stocks":
                 await self.tg.send_message(
                     chat_id,
                     (
                         "Остатки разделены по площадкам:\n"
                         "/stocks_wb — WB FBS + склады WB\n"
-                        "/stocks_ozon — OZON FBS + FBO"
+                        "/stocks_ozon — OZON FBS + FBO\n"
+                        "/stocks_main — Мой склад"
                     ),
                 )
             elif command == "/zero":
@@ -543,6 +561,82 @@ class StockMonitorService:
                         "WB FBS и OZON FBS синхронизированы."
                     ),
                 )
+            elif command == "/set_main":
+                if len(args) < 2:
+                    await self.tg.send_message(
+                        chat_id,
+                        "Формат: /set_main <артикул продавца> +N или -N",
+                    )
+                    return
+                if self.shared_inventory is None:
+                    raise RuntimeError("Общий склад не инициализирован")
+                sku = " ".join(args[:-1]).strip()
+                raw_delta = args[-1].strip()
+                if (
+                    len(raw_delta) < 2
+                    or raw_delta[0] not in {"+", "-"}
+                ):
+                    await self.tg.send_message(
+                        chat_id,
+                        "Количество должно быть дельтой со знаком: например +5 или -2.",
+                    )
+                    return
+                try:
+                    delta = int(raw_delta)
+                except ValueError:
+                    await self.tg.send_message(
+                        chat_id,
+                        "Количество должно быть целым числом со знаком: например +5 или -2.",
+                    )
+                    return
+                if delta == 0:
+                    await self.tg.send_message(
+                        chat_id,
+                        "Изменение должно быть ненулевым: например +5 или -2.",
+                    )
+                    return
+                if sku not in self.shared_inventory.all_skus():
+                    await self.tg.send_message(
+                        chat_id,
+                        f"Товар с артикулом «{sku}» не найден.",
+                    )
+                    return
+                before_local = self.shared_inventory.local_quantity(sku)
+                before_available = (
+                    self.shared_inventory.available_quantity(sku)
+                )
+                target = before_local + delta
+                if target < 0:
+                    await self.tg.send_message(
+                        chat_id,
+                        (
+                            f"Недостаточно товара на «Моём складе»: "
+                            f"сейчас {before_local} шт., изменение {raw_delta}."
+                        ),
+                    )
+                    return
+                local = await self.shared_inventory.set_local_stock(
+                    sku,
+                    target,
+                    reason="telegram_set_main",
+                )
+                available = self.shared_inventory.available_quantity(sku)
+                lines = [
+                    f"✅ {sku}",
+                    f"Мой склад: {before_local} → {local} шт. ({raw_delta})",
+                    f"Доступно для заказа: {available} шт.",
+                ]
+                if available < before_available:
+                    lines.append(
+                        (
+                            "Лимит «Доступно для заказа» автоматически "
+                            f"уменьшен: {before_available} → {available} шт."
+                        )
+                    )
+                await self.tg.send_message(
+                    chat_id,
+                    "\n".join(lines),
+                )
             elif command == "/fbs_zero_all":
                 await self.tg.send_message(
                     chat_id,
@@ -586,8 +680,9 @@ class StockMonitorService:
                 await self.tg.send_message(
                     chat_id,
                     (
-                        "Команды: /stocks_wb, /stocks_ozon, "
-                        "/stock <артикул продавца>, /set <артикул> <количество>, /zero, "
+                        "Команды: /stocks_wb, /stocks_ozon, /stocks_main, "
+                        "/stock <артикул продавца>, /set <артикул> <количество>, "
+                        "/set_main <артикул> +N|-N, /zero, "
                         "/fbs_zero_all, /fbs_restore, "
                         "/ozon_fbs_zero_all, /ozon_fbs_restore, "
                         "/status, /id"
@@ -657,6 +752,99 @@ class StockMonitorService:
             self._format_stocks_page(page),
             parse_mode="HTML",
             reply_markup=self._stocks_keyboard(page),
+        )
+
+    def _main_stock_page_meta(
+        self, page: int
+    ) -> tuple[list[str], int, int, int]:
+        if self.shared_inventory is None:
+            return [], 1, 1, 0
+        rows = sorted(
+            self.shared_inventory.all_skus(),
+            key=lambda sku: (
+                self.shared_inventory.local_quantity(sku) > 0,
+                str(sku).lower(),
+            ),
+        )
+        page_size = max(1, self.settings.stocks_page_size)
+        pages = max(1, math.ceil(len(rows) / page_size))
+        page = min(max(1, page), pages)
+        selected = rows[
+            (page - 1) * page_size : page * page_size
+        ]
+        return selected, page, pages, len(rows)
+
+    def _format_main_stocks_page(self, page: int) -> str:
+        selected, page, pages, total = self._main_stock_page_meta(
+            page
+        )
+        name_width = 32
+        table = [
+            f"   {'Артикул':<{name_width}} {'Остаток':>7}"
+        ]
+        for sku in selected:
+            quantity = (
+                self.shared_inventory.local_quantity(sku)
+                if self.shared_inventory is not None
+                else 0
+            )
+            marker = "🟢" if quantity > 0 else "🔴"
+            raw_name = str(sku) or "без артикула"
+            if len(raw_name) > name_width:
+                raw_name = raw_name[: name_width - 1] + "…"
+            table.append(
+                f"{marker} {raw_name:<{name_width}} {quantity:>7}"
+            )
+
+        local_stock = (
+            self.db.get_local_stock(
+                tuple(self.shared_inventory.all_skus())
+            )
+            if self.shared_inventory is not None
+            else {}
+        )
+        total_quantity = sum(int(qty) for qty in local_stock.values())
+        escaped_table = escape("\n".join(table))
+        return (
+            f"🏠 <b>Мой склад</b> — {page}/{pages} · "
+            f"товаров: {total} · всего: {total_quantity} шт.\n\n"
+            f"<pre>{escaped_table}</pre>"
+        )
+
+    def _main_stocks_keyboard(self, page: int) -> dict:
+        _, page, pages, _ = self._main_stock_page_meta(page)
+        buttons = []
+        if page > 1:
+            buttons.append(
+                {
+                    "text": "◀️",
+                    "callback_data": f"stocksmain:{page - 1}",
+                }
+            )
+        buttons.append(
+            {
+                "text": f"{page}/{pages}",
+                "callback_data": "stocksmain:noop",
+            }
+        )
+        if page < pages:
+            buttons.append(
+                {
+                    "text": "▶️",
+                    "callback_data": f"stocksmain:{page + 1}",
+                }
+            )
+        return {"inline_keyboard": [buttons]}
+
+    async def _send_main_stocks_page(
+        self, chat_id: int, page: int
+    ) -> None:
+        _, page, _, _ = self._main_stock_page_meta(page)
+        await self.tg.send_message(
+            chat_id,
+            self._format_main_stocks_page(page),
+            parse_mode="HTML",
+            reply_markup=self._main_stocks_keyboard(page),
         )
 
     def _depletion_action_keyboard(self, nm_id: int) -> dict:
@@ -1170,6 +1358,7 @@ class StockMonitorService:
         if data in {
             "stocks:noop",
             "stockswb:noop",
+            "stocksmain:noop",
             "action:noop",
         }:
             return
@@ -1198,6 +1387,26 @@ class StockMonitorService:
             except Exception as exc:
                 log.exception("Mass FBS restore failed")
                 await self.tg.send_message(chat_id, f"⚠️ Не удалось восстановить FBS: {exc}")
+            return
+
+        if data.startswith("stocksmain:"):
+            try:
+                page = int(data.split(":", 1)[1])
+            except (TypeError, ValueError):
+                return
+            _, page, _, _ = self._main_stock_page_meta(page)
+            try:
+                await self.tg.edit_message_text(
+                    chat_id,
+                    message_id,
+                    self._format_main_stocks_page(page),
+                    parse_mode="HTML",
+                    reply_markup=self._main_stocks_keyboard(page),
+                )
+            except Exception as exc:
+                log.warning(
+                    "Could not edit main stocks page: %s", exc
+                )
             return
 
         if data.startswith("stockswb:") or data.startswith("stocks:"):
