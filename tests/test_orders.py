@@ -151,7 +151,7 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
         await monitor.refresh()
         await monitor.refresh()
         self.assertEqual(len(tg.broadcasts), 1)
-        self.assertIn("Новый FBS-заказ", tg.broadcasts[0][1])
+        self.assertIn("Новый WB FBS-заказ", tg.broadcasts[0][1])
 
     async def test_status_audit_reoffers_notified_but_unassigned_order(self):
         monitor, _, tg = self.monitor([self.row()], [])
