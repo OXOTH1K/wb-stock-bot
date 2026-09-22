@@ -287,7 +287,11 @@ class OrderMonitor:
         return {"inline_keyboard": rows}
 
     def _text(self, order: FBSOrder, supplies: list[FBSSupply] | None) -> str:
-        lines = ["🛒 Новый FBS-заказ", f"Артикул: {order.article or '—'}", f"Заказ: {order.id}"]
+        lines = [
+            "[[WB]] Новый WB FBS-заказ",
+            f"Артикул: {order.article or '—'}",
+            f"Заказ: {order.id}",
+        ]
         if order.offices:
             lines.append(f"Направление WB: {', '.join(order.offices)}")
         if supplies is None:
@@ -422,7 +426,8 @@ class OrderMonitor:
         for order in sorted(pending, key=lambda o: (o.created_at, o.id)):
             await self.tg.send_message(
                 chat_id,
-                "🔎 /status: заказ требует решения\n\n" + self._text(order, supplies),
+                "[[WB]] 🔎 /status: WB-заказ требует решения\n\n"
+                + self._text(order, supplies),
                 reply_markup=self._keyboard(order, supplies),
             )
             if self._state(order.id) is None:
@@ -455,7 +460,7 @@ class OrderMonitor:
         for order in sorted(new_orders, key=lambda o: (o.created_at, o.id)):
             await self.tg.broadcast(
                 self.settings.telegram_chat_ids,
-                "🧭 Заказ найден при сверке после восстановления связи\n\n"
+                "[[WB]] 🧭 WB-заказ найден при сверке после восстановления связи\n\n"
                 + self._text(order, supplies),
                 reply_markup=self._keyboard(order, supplies),
             )
