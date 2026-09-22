@@ -108,8 +108,8 @@ class StockMonitorService:
                 "✅ Мониторинг остатков запущен\n"
                 f"Склад продавца: {self.warehouse.name}\n"
                 f"Товаров: {len(self.products)}\n"
-                f"С нулём на FBS: {zeros_fbs}\n"
-                f"С нулём на складах WB: {wb_zero_text}\n\n"
+                f"С нулём на WB FBS: {zeros_fbs}\n"
+                f"С нулём на FBW: {wb_zero_text}\n\n"
                 "Команды: /stocks_wb, /stocks_ozon, /zero, /status, "
                 "/fbs_zero_all, /fbs_restore, /ozon_fbs_zero_all, "
                 "/ozon_fbs_restore"
@@ -257,13 +257,13 @@ class StockMonitorService:
                 else fbs_qty
             )
             text = (
-                "🟢 Товар появился на складе WB\n"
+                "[[WB]] 🟢 Товар появился на FBW\n"
                 f"Артикул продавца: {product.vendor_code or '—'}\n"
                 f"Мой склад: {local_qty} шт.\n"
                 f"Доступно для заказа: {available_qty} шт.\n"
-                f"На складах WB: было {old_qty} шт. → стало {wb_qty} шт.\n\n"
+                f"На FBW: было {old_qty} шт. → стало {wb_qty} шт.\n\n"
                 "Обнулить только WB FBS? "
-                "«Доступно для заказа», OZON FBS и «Мой склад» не изменятся."
+                "«Доступно для заказа», Ozon FBS и «Мой склад» не изменятся."
             )
             keyboard = self._wb_appearance_action_keyboard(nm_id)
         elif alert_type == "depletion":
@@ -287,10 +287,10 @@ class StockMonitorService:
                     self.db.delete_pending_alert(alert_key)
                     return
                 text = (
-                    "🔴 Товар закончился на складе WB\n"
+                    "[[WB]] 🔴 Товар закончился на FBW\n"
                     f"Артикул продавца: {product.vendor_code or '—'}\n"
                     "WB FBS сейчас намеренно равен 0.\n"
-                    "На складах WB: 0 шт.\n\n"
+                    "На FBW: 0 шт.\n\n"
                     f"Доступно для заказа: {available_qty} шт.\n"
                     "Вернуть текущее доступное количество только на WB FBS?"
                 )
@@ -313,12 +313,12 @@ class StockMonitorService:
                 saved_total = sum(saved.values())
                 if saved_total > 0:
                     text = (
-                        "🔴 Товар закончился на складе WB\n"
+                        "[[WB]] 🔴 Товар закончился на FBW\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        "На вашем складе FBS: 0 шт.\n"
-                        "На складах WB: 0 шт.\n\n"
-                        f"Перед обнулением FBS было сохранено: {saved_total} шт.\n"
-                        "Вернуть сохранённый остаток на FBS?"
+                        "WB FBS: 0 шт.\n"
+                        "На FBW: 0 шт.\n\n"
+                        f"Перед обнулением WB FBS было сохранено: {saved_total} шт.\n"
+                        "Вернуть сохранённый остаток на WB FBS?"
                     )
                     keyboard = self._saved_restore_keyboard(nm_id, saved_total)
                 else:
@@ -328,11 +328,11 @@ class StockMonitorService:
                         else 0
                     )
                     text = (
-                        "🔴 Товар закончился в доступном пуле и на WB\n"
+                        "[[WB]] 🔴 Товар закончился в доступном пуле и на WB\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
                         "Доступно для заказа: 0 шт.\n"
                         f"Мой склад: {local_qty} шт.\n"
-                        "На складах WB: 0 шт.\n\n"
+                        "На FBW: 0 шт.\n\n"
                         "Установить «Доступно для заказа» в 1 или 5 шт.?"
                     )
                     keyboard = self._depletion_action_keyboard(nm_id)
@@ -434,10 +434,10 @@ class StockMonitorService:
                 (
                     f"Ваш Telegram chat_id: {chat_id}\n\n"
                     "После добавления этого ID в TELEGRAM_CHAT_IDS доступны команды:\n"
-                    "/stocks_wb — остатки WB FBS + склады WB\n"
+                    "/stocks_wb — остатки WB FBS + FBW\n"
                     "/stocks_wb 2 — открыть страницу WB\n"
-                    "/stocks_ozon — остатки OZON FBS + FBO\n"
-                    "/stocks_ozon 2 — открыть страницу OZON\n"
+                    "/stocks_ozon — остатки Ozon FBS + FBO\n"
+                    "/stocks_ozon 2 — открыть страницу Ozon\n"
                     "/stocks_main — остатки «Моего склада»\n"
                     "/stocks_main 2 — открыть страницу «Моего склада»\n"
                     "/stock <артикул продавца> — найти товар\n"
@@ -446,8 +446,8 @@ class StockMonitorService:
                     "/zero — товары с нулевым остатком\n"
                     "/fbs_zero_all — сохранить и обнулить весь FBS\n"
                     "/fbs_restore — восстановить WB FBS\n"
-                    "/ozon_fbs_zero_all — обнулить весь OZON FBS\n"
-                    "/ozon_fbs_restore — восстановить OZON FBS из локального склада\n"
+                    "/ozon_fbs_zero_all — обнулить весь Ozon FBS\n"
+                    "/ozon_fbs_restore — восстановить Ozon FBS из локального склада\n"
                     "/status — состояние сервиса"
                 ),
             )
@@ -499,8 +499,8 @@ class StockMonitorService:
                     chat_id,
                     (
                         "Остатки разделены по площадкам:\n"
-                        "/stocks_wb — WB FBS + склады WB\n"
-                        "/stocks_ozon — OZON FBS + FBO\n"
+                        "/stocks_wb — WB FBS + FBW\n"
+                        "/stocks_ozon — Ozon FBS + FBO\n"
                         "/stocks_main — Мой склад"
                     ),
                 )
@@ -558,7 +558,7 @@ class StockMonitorService:
                         f"✅ {sku}\n"
                         f"Доступно для заказа: {available} шт.\n"
                         f"Мой склад: {local} шт. (не изменён)\n"
-                        "WB FBS и OZON FBS синхронизированы."
+                        "WB FBS и Ozon FBS синхронизированы."
                     ),
                 )
             elif command == "/set_main":
@@ -641,7 +641,7 @@ class StockMonitorService:
                 await self.tg.send_message(
                     chat_id,
                     "⚠️ Обнулить «Доступно для заказа» у ВСЕХ товаров?\n"
-                    "«Мой склад» не изменится, WB/OZON FBS станут 0.",
+                    "«Мой склад» не изменится, WB FBS / Ozon FBS станут 0.",
                     reply_markup={
                         "inline_keyboard": [[
                             {"text": "Обнулить весь FBS", "callback_data": "fbsallzero:yes"},
@@ -665,7 +665,7 @@ class StockMonitorService:
                         (
                             f"♻️ Восстановить «Доступно для заказа»: "
                             f"{len(saved)} товаров, суммарно {saved_total} шт.?\n"
-                            "«Мой склад» не изменится; значение будет опубликовано в WB/OZON FBS."
+                            "«Мой склад» не изменится; значение будет опубликовано в WB FBS / Ozon FBS."
                         ),
                         reply_markup={
                             "inline_keyboard": [[
@@ -713,7 +713,9 @@ class StockMonitorService:
         # A <pre> block makes the numeric columns monospaced and aligned in Telegram.
         # Keep the article column compact enough to be readable on a phone.
         name_width = 32
-        table = [f"   {'Артикул':<{name_width}} {'FBS':>4} {'WB':>4}"]
+        table = [
+            f"   {'Артикул':<{name_width}} {'WB FBS':>6} {'FBW':>4}"
+        ]
         for product in selected:
             fbs = self.fbs_stock.get(product.nm_id, 0)
             wb = self.wb_stock.get(product.nm_id, 0)
@@ -726,13 +728,15 @@ class StockMonitorService:
             raw_name = product.vendor_code or product.title or "без артикула"
             if len(raw_name) > name_width:
                 raw_name = raw_name[: name_width - 1] + "…"
-            table.append(f"{marker} {raw_name:<{name_width}} {fbs:>4} {wb:>4}")
+            table.append(
+                f"{marker} {raw_name:<{name_width}} {fbs:>6} {wb:>4}"
+            )
 
         escaped_table = escape("\n".join(table))
         return (
-            f"🟣 <b>Остатки WB</b> — {page}/{pages} · товаров: {total}\n\n"
+            f"[[WB]] <b>Остатки WB</b> — {page}/{pages} · товаров: {total}\n\n"
             f"<pre>{escaped_table}</pre>\n"
-            "<i>WB — суммарный остаток на складах Wildberries.</i>"
+            "<i>FBW — остаток на складе Wildberries.</i>"
         )
 
     def _stocks_keyboard(self, page: int) -> dict:
@@ -942,7 +946,7 @@ class StockMonitorService:
                 chat_id,
                 message_id,
                 original_text,
-                "ℹ️ Действие не выполнено: товар уже появился на складе WB.",
+                "ℹ️ Действие не выполнено: товар уже появился на FBW.",
             )
             return
 
@@ -959,7 +963,7 @@ class StockMonitorService:
                 original_text,
                 (
                     f"✅ «Доступно для заказа» установлено в {quantity} шт. "
-                    "«Мой склад» не изменён, WB/OZON FBS синхронизированы."
+                    "«Мой склад» не изменён, WB FBS / Ozon FBS синхронизированы."
                 ),
             )
             return
@@ -971,7 +975,7 @@ class StockMonitorService:
         await self.refresh_fbs(notify=True)
         actual = self.fbs_stock.get(nm_id, 0)
         status = (
-            f"✅ На FBS установлено {quantity} шт."
+            f"✅ На WB FBS установлено {quantity} шт."
             if actual == quantity
             else (
                 f"✅ Команда на установку {quantity} шт. отправлена в WB. "
@@ -1007,7 +1011,7 @@ class StockMonitorService:
                 original_text,
                 (
                     "⚠️ WB FBS не обнулён: бот больше не видит остаток "
-                    "этого товара на складе WB."
+                    "этого товара на FBW."
                 ),
             )
             return
@@ -1034,8 +1038,8 @@ class StockMonitorService:
                 message_id,
                 original_text,
                 (
-                    "✅ Только WB FBS обнулён. "
-                    "«Доступно для заказа», OZON FBS и «Мой склад» не изменены."
+                    "✅ Только WB WB FBS обнулён. "
+                    "«Доступно для заказа», Ozon FBS и «Мой склад» не изменены."
                 ),
             )
             return
@@ -1051,7 +1055,7 @@ class StockMonitorService:
         await self.refresh_fbs(notify=True)
         actual = self.fbs_stock.get(nm_id, 0)
         status = (
-            "✅ FBS обнулён."
+            "✅ WB FBS обнулён."
             if actual == 0
             else (
                 "✅ Команда на обнуление отправлена в WB. "
@@ -1087,7 +1091,7 @@ class StockMonitorService:
                 original_text,
                 (
                     "⚠️ Восстановление отменено: товар снова появился "
-                    "на складе WB."
+                    "на FBW."
                 ),
             )
             return
@@ -1119,7 +1123,7 @@ class StockMonitorService:
                 original_text,
                 (
                     f"✅ WB FBS восстановлен до текущего «Доступно для заказа»: {quantity} шт. "
-                    "OZON FBS и локальные остатки не изменены."
+                    "Ozon FBS и локальные остатки не изменены."
                 ),
             )
             return
@@ -1156,7 +1160,7 @@ class StockMonitorService:
             chat_id,
             message_id,
             original_text,
-            f"✅ На FBS возвращён сохранённый остаток: {total} шт.",
+            f"✅ На WB FBS возвращён сохранённый остаток: {total} шт.",
         )
 
     async def _zero_all_fbs(
@@ -1176,7 +1180,7 @@ class StockMonitorService:
                 original_text,
                 (
                     "✅ «Доступно для заказа» обнулено для всех товаров.\n"
-                    "«Мой склад» не изменён, WB/OZON FBS синхронизированы в 0.\n"
+                    "«Мой склад» не изменён, WB FBS / Ozon FBS синхронизированы в 0.\n"
                     f"Товаров: {count}, ранее доступно: {total} шт."
                 ),
             )
@@ -1237,7 +1241,7 @@ class StockMonitorService:
             original_text,
             (
                 "✅ Все остатки WB FBS обнулены.\n"
-                "Основной склад и OZON FBS не изменены.\n"
+                "Основной склад и Ozon FBS не изменены.\n"
                 f"Товарных вариантов в WB: {len(snapshot)}."
             ),
         )
@@ -1267,7 +1271,7 @@ class StockMonitorService:
                 original_text,
                 (
                     "✅ «Доступно для заказа» восстановлено из сохранённого значения.\n"
-                    "«Мой склад» не изменён, WB/OZON FBS синхронизированы.\n"
+                    "«Мой склад» не изменён, WB FBS / Ozon FBS синхронизированы.\n"
                     f"Товаров: {restored}, суммарно: {total} шт."
                 ),
             )
@@ -1520,11 +1524,11 @@ class StockMonitorService:
             name = (product.vendor_code or product.title or "без артикула")[:45]
             zero_at = []
             if fbs == 0:
-                zero_at.append("FBS")
+                zero_at.append("WB FBS")
             if wb == 0:
                 zero_at.append("WB")
             lines.append(
-                f"• {name} | ноль: {', '.join(zero_at)} | FBS {fbs} | WB {wb}"
+                f"• {name} | ноль: {', '.join(zero_at)} | WB FBS {fbs} | FBW {wb}"
             )
         return "\n".join(lines)
 
@@ -1542,7 +1546,7 @@ class StockMonitorService:
             wb = self.wb_stock.get(product.nm_id, 0)
             lines.append(
                 f"{product.vendor_code or '—'}\n"
-                f"FBS: {fbs} шт. | Склады WB: {wb} шт."
+                f"WB FBS: {fbs} шт. | FBW: {wb} шт."
             )
         if len(matches) > 30:
             lines.append(f"\nПоказаны первые 30 из {len(matches)}.")
@@ -1594,10 +1598,10 @@ class StockMonitorService:
                 await self.tg.send_message(
                     chat_id,
                     (
-                        "🔎 /status: товар есть одновременно на FBS и WB\n"
+                        "[[WB]] 🔎 /status: товар есть одновременно на WB FBS и FBW\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
-                        f"FBS: {fbs_qty} шт. | WB: {wb_qty} шт.\n\n"
-                        "Обнулить остаток на FBS?"
+                        f"WB FBS: {fbs_qty} шт. | FBW: {wb_qty} шт.\n\n"
+                        "Обнулить WB FBS?"
                     ),
                     reply_markup=self._wb_appearance_action_keyboard(nm_id),
                 )
@@ -1667,18 +1671,18 @@ class StockMonitorService:
                 if restore_qty > 0:
                     if shared_suppressed:
                         text = (
-                            "🔎 /status: товар закончился на складе WB\n"
+                            "[[WB]] 🔎 /status: товар закончился на FBW\n"
                             f"Артикул продавца: {product.vendor_code or '—'}\n"
-                            "WB FBS: 0 шт. | склад WB: 0 шт.\n"
+                            "WB FBS: 0 шт. | FBW: 0 шт.\n"
                             f"Доступно для заказа: {restore_qty} шт.\n\n"
                             "Вернуть текущее доступное количество только на WB FBS?"
                         )
                     else:
                         text = (
-                            "🔎 /status: товар закончился на складе WB\n"
+                            "[[WB]] 🔎 /status: товар закончился на FBW\n"
                             f"Артикул продавца: {product.vendor_code or '—'}\n"
-                            "WB FBS: 0 шт. | склад WB: 0 шт.\n\n"
-                            f"Сохранённый FBS-остаток: {restore_qty} шт.\n"
+                            "WB FBS: 0 шт. | FBW: 0 шт.\n\n"
+                            f"Сохранённый WB FBS-остаток: {restore_qty} шт.\n"
                             "Вернуть остаток на WB FBS?"
                         )
                     keyboard = self._saved_restore_keyboard(
@@ -1686,11 +1690,11 @@ class StockMonitorService:
                     )
                 else:
                     text = (
-                        "🔎 /status: товар закончился везде\n"
+                        "[[WB]] 🔎 /status: товар закончился везде\n"
                         f"Артикул продавца: {product.vendor_code or '—'}\n"
                         f"Мой склад: {local_qty} шт. | "
                         f"Доступно для заказа: {available_qty} шт.\n"
-                        "WB: 0 шт.\n\n"
+                        "FBW: 0 шт.\n\n"
                         "Установить «Доступно для заказа» в 1 или 5 шт.?"
                     )
                     keyboard = self._depletion_action_keyboard(
@@ -1711,7 +1715,7 @@ class StockMonitorService:
             f"Склад продавца: {warehouse}\n"
             f"Товаров: {len(self.products)}\n"
             f"Каталог: {format_dt(self.catalog_updated_at)}\n"
-            f"FBS остатки: {format_dt(self.fbs_updated_at)}\n"
+            f"WB FBS остатки: {format_dt(self.fbs_updated_at)}\n"
             f"WB остатки: {format_dt(self.wb_updated_at)}\n"
             f"Интервалы: FBS {self.settings.fbs_check_interval // 60} мин, "
             f"WB {self.settings.wb_check_interval // 60} мин"

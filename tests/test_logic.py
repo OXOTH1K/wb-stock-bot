@@ -38,22 +38,22 @@ class LogicTests(unittest.TestCase):
     def test_stock_marker_is_green_when_fbs_has_stock(self):
         text = self._service_for_stock_format(3, 0)._format_stocks_page(1)
         self.assertIn("🟢 SKU-100", text)
-        self.assertIn("   3    0", text)
+        self.assertIn("     3    0", text)
 
     def test_stock_marker_is_green_when_wb_has_stock(self):
         text = self._service_for_stock_format(0, 2)._format_stocks_page(1)
         self.assertIn("🟢 SKU-100", text)
-        self.assertIn("   0    2", text)
+        self.assertIn("     0    2", text)
 
     def test_stock_marker_is_red_only_when_everywhere_zero(self):
         text = self._service_for_stock_format(0, 0)._format_stocks_page(1)
         self.assertIn("🔴 SKU-100", text)
-        self.assertIn("   0    0", text)
+        self.assertIn("     0    0", text)
 
     def test_stock_marker_is_purple_when_both_have_stock(self):
         text = self._service_for_stock_format(3, 2)._format_stocks_page(1)
         self.assertIn("🟣 SKU-100", text)
-        self.assertIn("   3    2", text)
+        self.assertIn("     3    2", text)
 
     def test_stock_page_hides_numeric_wb_article(self):
         text = self._service_for_stock_format(3, 0)._format_stocks_page(1)
@@ -64,8 +64,8 @@ class LogicTests(unittest.TestCase):
         text = self._service_for_stock_format(3, 2)._format_stocks_page(1)
         self.assertIn("<pre>", text)
         self.assertIn("Артикул", text)
-        self.assertIn("FBS", text)
-        self.assertIn("WB", text)
+        self.assertIn("WB FBS", text)
+        self.assertIn("FBW", text)
 
     def test_stock_keyboard_has_next_button(self):
         service = object.__new__(StockMonitorService)
@@ -197,7 +197,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         await service._notify_wb_appearances([(100, 0, 4)])
         self.assertEqual(len(service.tg.messages), 1)
         text = service.tg.messages[0][1]
-        self.assertIn("Товар появился на складе WB", text)
+        self.assertIn("Товар появился на FBW", text)
         self.assertIn("Доступно для заказа: 3 шт.", text)
         self.assertIn("было 0 шт. → стало 4 шт.", text)
         self.assertNotIn("Артикул WB", text)
@@ -235,7 +235,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         text = service.tg.messages[0][1]
         self.assertIn("Товар закончился в доступном пуле и на WB", text)
         self.assertIn("Доступно для заказа: 0 шт.", text)
-        self.assertIn("На складах WB: 0 шт.", text)
+        self.assertIn("На FBW: 0 шт.", text)
 
     async def test_total_depletion_first_combined_snapshot_is_baseline(self):
         service = self._service(0)

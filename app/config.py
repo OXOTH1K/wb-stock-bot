@@ -30,6 +30,8 @@ class Settings:
     ozon_order_check_interval: int
     ozon_stock_check_interval: int
     ozon_warehouse_id: int | None
+    telegram_wb_emoji_id: str = ""
+    telegram_ozon_emoji_id: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -120,4 +122,10 @@ class Settings:
                 )
             ),
             ozon_warehouse_id=ozon_warehouse_id,
+            telegram_wb_emoji_id=os.getenv(
+                "TELEGRAM_WB_EMOJI_ID", ""
+            ).strip(),
+            telegram_ozon_emoji_id=os.getenv(
+                "TELEGRAM_OZON_EMOJI_ID", ""
+            ).strip(),
         )

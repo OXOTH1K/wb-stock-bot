@@ -319,7 +319,7 @@ class OzonIntegration:
         if action == "zero":
             buttons = [
                 {
-                    "text": "Обнулить OZON FBS",
+                    "text": "Обнулить Ozon FBS",
                     "callback_data": f"ozstock:{product_id}:zero",
                 },
                 {
@@ -335,7 +335,7 @@ class OzonIntegration:
             )
             buttons = [
                 {
-                    "text": f"Вернуть {quantity} шт. на OZON FBS",
+                    "text": f"Вернуть {quantity} шт. на Ozon FBS",
                     "callback_data": f"ozstock:{product_id}:restore",
                 },
                 {
@@ -382,7 +382,7 @@ class OzonIntegration:
         selected, page, pages, total = self._stock_page_meta(page)
         name_width = 32
         table = [
-            f"   {'Артикул':<{name_width}} {'FBS':>4} {'FBO':>4}"
+            f"   {'Артикул':<{name_width}} {'Ozon FBS':>8} {'FBO':>4}"
         ]
         for sku in selected:
             fbs_qty = int(fbs.get(sku, 0))
@@ -400,14 +400,14 @@ class OzonIntegration:
                 raw_name = raw_name[: name_width - 1] + "…"
             table.append(
                 f"{marker} {raw_name:<{name_width}} "
-                f"{fbs_qty:>4} {fbo_qty:>4}"
+                f"{fbs_qty:>8} {fbo_qty:>4}"
             )
         escaped_table = escape("\n".join(table))
         return (
-            f"🟦 <b>Остатки OZON</b> — {page}/{pages} · "
+            f"[[OZON]] <b>Остатки Ozon</b> — {page}/{pages} · "
             f"товаров: {total}\n\n"
             f"<pre>{escaped_table}</pre>\n"
-            "<i>FBO — остаток на складе OZON.</i>"
+            "<i>FBO — склад Ozon.</i>"
         )
 
     def _stocks_keyboard(self, page: int) -> dict:
@@ -517,9 +517,9 @@ class OzonIntegration:
         await self.tg.broadcast(
             self.settings.telegram_chat_ids,
             (
-                "🔴 Товар закончился в OZON FBS и FBO\n"
+                "[[OZON]] 🔴 Товар закончился в Ozon FBS и FBO\n"
                 f"Артикул продавца: {sku}\n"
-                "OZON FBS: 0 шт. | OZON FBO: 0 шт.\n"
+                "Ozon FBS: 0 шт. | FBO: 0 шт.\n"
                 f"Мой склад: {local} шт.\n"
                 "Доступно для заказа: 0 шт.\n\n"
                 "Установить «Доступно для заказа» в 1 или 5 шт.?"
@@ -579,13 +579,13 @@ class OzonIntegration:
                     await self.tg.broadcast(
                         self.settings.telegram_chat_ids,
                         (
-                            "🟦 Товар появился на складе OZON\n"
+                            "[[OZON]] 🟢 Товар появился в FBO\n"
                             f"Артикул продавца: {sku}\n"
                             f"Мой склад: {local} шт.\n"
                             f"Доступно для заказа: {available} шт.\n"
-                            f"OZON FBS: {new_fbs} шт.\n"
-                            f"OZON FBO: было 0 шт. → стало {new_fbo} шт.\n\n"
-                            "Обнулить только OZON FBS? "
+                            f"Ozon FBS: {new_fbs} шт.\n"
+                            f"FBO: было 0 шт. → стало {new_fbo} шт.\n\n"
+                            "Обнулить только Ozon FBS? "
                             "«Доступно для заказа», WB FBS и «Мой склад» не изменятся."
                         ),
                         reply_markup=keyboard,
@@ -631,10 +631,10 @@ class OzonIntegration:
                     await self.tg.broadcast(
                         self.settings.telegram_chat_ids,
                         (
-                            "🔵 Товар закончился на складе OZON\n"
+                            "[[OZON]] 🔴 Товар закончился в FBO\n"
                             f"Артикул продавца: {sku}\n"
                             f"Доступно для заказа: {restore_qty} шт.\n\n"
-                            "Вернуть текущее доступное количество только на OZON FBS?"
+                            "Вернуть текущее доступное количество только на Ozon FBS?"
                         ),
                         reply_markup=keyboard,
                     )
@@ -680,12 +680,12 @@ class OzonIntegration:
                 await self.tg.send_message(
                     chat_id,
                     (
-                        "🔎 /status: товар есть одновременно "
-                        "в OZON FBS и FBO\n"
+                        "[[OZON]] 🔎 /status: товар есть одновременно "
+                        "в Ozon FBS и FBO\n"
                         f"Артикул продавца: {sku}\n"
-                        f"OZON FBS: {fbs_qty} шт. | "
-                        f"OZON FBO: {fbo_qty} шт.\n\n"
-                        "Обнулить только OZON FBS?"
+                        f"Ozon FBS: {fbs_qty} шт. | "
+                        f"FBO: {fbo_qty} шт.\n\n"
+                        "Обнулить только Ozon FBS?"
                     ),
                     reply_markup=keyboard,
                 )
@@ -711,10 +711,10 @@ class OzonIntegration:
                     await self.tg.send_message(
                         chat_id,
                         (
-                            "🔎 /status: товар закончился на складе OZON\n"
+                            "[[OZON]] 🔎 /status: товар закончился в FBO\n"
                             f"Артикул продавца: {sku}\n"
                             f"Доступно для заказа: {available} шт.\n\n"
-                            "Вернуть текущее доступное количество только на OZON FBS?"
+                            "Вернуть текущее доступное количество только на Ozon FBS?"
                         ),
                         reply_markup=keyboard,
                     )
@@ -744,8 +744,8 @@ class OzonIntegration:
                 await self.tg.send_message(
                     chat_id,
                     (
-                        "🔎 /status: товар закончился "
-                        "в OZON FBS и FBO\n"
+                        "[[OZON]] 🔎 /status: товар закончился "
+                        "в Ozon FBS и FBO\n"
                         f"Артикул продавца: {sku}\n"
                         f"Мой склад: {local} шт.\n"
                         "Доступно для заказа: 0 шт.\n\n"
@@ -789,7 +789,7 @@ class OzonIntegration:
                     )
                     return True
             await self.tg.send_message(
-                chat_id, "Обновляю остатки OZON…"
+                chat_id, "Обновляю остатки Ozon…"
             )
             await self.refresh_catalog_and_stocks()
             await self._send_stocks_page(chat_id, page)
@@ -803,13 +803,13 @@ class OzonIntegration:
                 chat_id,
                 (
                     "⚠️ Обнулить «Доступно для заказа» для всех товаров?\n"
-                    "«Мой склад» не изменится, WB/OZON FBS станут 0."
+                    "«Мой склад» не изменится, WB FBS / Ozon FBS станут 0."
                 ),
                 reply_markup={
                     "inline_keyboard": [
                         [
                             {
-                                "text": "Обнулить OZON FBS",
+                                "text": "Обнулить Ozon FBS",
                                 "callback_data": "ozfbsallzero:yes",
                             },
                             {
@@ -833,7 +833,7 @@ class OzonIntegration:
         if not mass_skus:
             await self.tg.send_message(
                 chat_id,
-                "ℹ️ Массово обнулённых OZON FBS-остатков нет.",
+                "ℹ️ Массово обнулённых Ozon FBS-остатков нет.",
             )
             return True
         saved = self.db.get_available_snapshot(
@@ -856,7 +856,7 @@ class OzonIntegration:
                 "inline_keyboard": [
                     [
                         {
-                            "text": "Восстановить OZON FBS",
+                            "text": "Восстановить Ozon FBS",
                             "callback_data": "ozfbsallrestore:yes",
                         },
                         {
@@ -889,7 +889,7 @@ class OzonIntegration:
             original,
             (
                 "✅ «Доступно для заказа» обнулено.\n"
-                "«Мой склад» не изменён, WB/OZON FBS установлены в 0.\n"
+                "«Мой склад» не изменён, WB FBS / Ozon FBS установлены в 0.\n"
                 f"Товаров: {count}, до обнуления: {before} шт."
             ),
         )
@@ -912,7 +912,7 @@ class OzonIntegration:
                 chat_id,
                 message_id,
                 original,
-                "ℹ️ Массово обнулённых OZON FBS-остатков нет.",
+                "ℹ️ Массово обнулённых Ozon FBS-остатков нет.",
             )
             return
         await self._finish(
@@ -920,7 +920,7 @@ class OzonIntegration:
             message_id,
             original,
             (
-                "✅ «Доступно для заказа» восстановлено; «Мой склад» не изменён, WB/OZON FBS синхронизированы.\n"
+                "✅ «Доступно для заказа» восстановлено; «Мой склад» не изменён, WB FBS / Ozon FBS синхронизированы.\n"
                 f"Товаров: {restored}, суммарно: {total} шт."
             ),
         )
@@ -951,7 +951,7 @@ class OzonIntegration:
     @staticmethod
     def _text(posting: OzonPosting) -> str:
         lines = [
-            "🟦 Новый FBS-заказ OZON",
+            "[[OZON]] Новый Ozon FBS-заказ",
             f"Отправление: {posting.posting_number}",
         ]
         if posting.order_number:
@@ -969,7 +969,7 @@ class OzonIntegration:
         lines.extend(
             [
                 "",
-                "На OZON поставку создавать не нужно: "
+                "На Ozon поставку создавать не нужно: "
                 "кнопка ниже сразу переводит отправление в сборку.",
             ]
         )
@@ -1019,7 +1019,7 @@ class OzonIntegration:
         for posting in pending:
             await self.tg.send_message(
                 chat_id,
-                "🔎 /status: OZON-заказ требует решения\n\n"
+                "[[OZON]] 🔎 /status: Ozon-заказ требует решения\n\n"
                 + self._text(posting),
                 reply_markup=self._keyboard(posting),
             )
@@ -1096,7 +1096,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⏭ Массовое обнуление OZON FBS отменено.",
+                        "⏭ Массовое обнуление Ozon FBS отменено.",
                     )
                 elif data.endswith(":yes"):
                     await self._zero_all_fbs(
@@ -1106,7 +1106,7 @@ class OzonIntegration:
                 log.exception("OZON mass FBS zero failed")
                 await self.tg.send_message(
                     chat_id,
-                    f"⚠️ Не удалось обнулить OZON FBS: {exc}",
+                    f"⚠️ Не удалось обнулить Ozon FBS: {exc}",
                 )
             return True
 
@@ -1117,7 +1117,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⏭ Восстановление OZON FBS отменено.",
+                        "⏭ Восстановление Ozon FBS отменено.",
                     )
                 elif data.endswith(":yes"):
                     await self._restore_all_fbs(
@@ -1127,7 +1127,7 @@ class OzonIntegration:
                 log.exception("OZON mass FBS restore failed")
                 await self.tg.send_message(
                     chat_id,
-                    f"⚠️ Не удалось восстановить OZON FBS: {exc}",
+                    f"⚠️ Не удалось восстановить Ozon FBS: {exc}",
                 )
             return True
 
@@ -1142,7 +1142,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⚠️ Товар OZON больше не найден в каталоге.",
+                        "⚠️ Товар Ozon больше не найден в каталоге.",
                     )
                     return True
 
@@ -1168,7 +1168,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⏭ OZON FBS оставлен без изменений.",
+                        "⏭ Ozon FBS оставлен без изменений.",
                     )
                     return True
                 if action == "skiprestore":
@@ -1183,7 +1183,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⏭ OZON FBS не восстанавливать.",
+                        "⏭ Ozon FBS не восстанавливать.",
                     )
                     return True
                 if action == "skipadd":
@@ -1204,7 +1204,7 @@ class OzonIntegration:
                             chat_id,
                             message_id,
                             original,
-                            "ℹ️ Обнуление отменено: на складе OZON уже 0.",
+                            "ℹ️ Обнуление отменено: в FBO уже 0.",
                         )
                         return True
                     if fbs_qty <= 0:
@@ -1212,7 +1212,7 @@ class OzonIntegration:
                             chat_id,
                             message_id,
                             original,
-                            "ℹ️ OZON FBS уже равен 0.",
+                            "ℹ️ Ozon FBS уже равен 0.",
                         )
                         return True
                     await self.inventory.suppress_channel(
@@ -1223,7 +1223,7 @@ class OzonIntegration:
                         message_id,
                         original,
                         (
-                            "✅ Только OZON FBS обнулён. "
+                            "✅ Только Ozon FBS обнулён. "
                             "«Доступно для заказа», WB FBS и «Мой склад» не изменены."
                         ),
                     )
@@ -1235,7 +1235,7 @@ class OzonIntegration:
                             chat_id,
                             message_id,
                             original,
-                            "ℹ️ Восстановление отменено: товар снова есть на складе OZON.",
+                            "ℹ️ Восстановление отменено: товар снова есть в FBO.",
                         )
                         return True
                     reason = (
@@ -1248,7 +1248,7 @@ class OzonIntegration:
                             chat_id,
                             message_id,
                             original,
-                            "ℹ️ OZON FBS не находится в режиме автоматического обнуления из-за FBO.",
+                            "ℹ️ Ozon FBS не находится в режиме автоматического обнуления из-за FBO.",
                         )
                         return True
                     quantity = await self.inventory.restore_channel(
@@ -1258,7 +1258,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        f"✅ OZON FBS восстановлен до текущего «Доступно для заказа»: {quantity} шт. "
+                        f"✅ Ozon FBS восстановлен до текущего «Доступно для заказа»: {quantity} шт. "
                         "WB FBS и локальные остатки не изменены.",
                     )
                     return True
@@ -1270,7 +1270,7 @@ class OzonIntegration:
                             message_id,
                             original,
                             (
-                                "ℹ️ Действие отменено: остаток OZON "
+                                "ℹ️ Действие отменено: остаток Ozon "
                                 "уже изменился."
                             ),
                         )
@@ -1301,7 +1301,7 @@ class OzonIntegration:
                         original,
                         (
                             f"✅ «Доступно для заказа» установлено в {quantity} шт. "
-                            "«Мой склад» не изменён, WB/OZON FBS синхронизированы."
+                            "«Мой склад» не изменён, WB FBS / Ozon FBS синхронизированы."
                         ),
                     )
                     return True
@@ -1323,7 +1323,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "ℹ️ OZON-заказ уже собран.",
+                        "ℹ️ Ozon-заказ уже собран.",
                     )
                     return True
                 if state == "skipped":
@@ -1331,7 +1331,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "ℹ️ Для OZON-заказа уже выбрано «Не собирать».",
+                        "ℹ️ Для Ozon-заказа уже выбрано «Не собирать».",
                     )
                     return True
 
@@ -1341,7 +1341,7 @@ class OzonIntegration:
                         chat_id,
                         message_id,
                         original,
-                        "⏭ Решение: OZON-заказ не собирать через бота.",
+                        "⏭ Решение: Ozon-заказ не собирать через бота.",
                     )
                     return True
 
@@ -1361,7 +1361,7 @@ class OzonIntegration:
                         original,
                         (
                             "ℹ️ Отправление уже не ожидает сборки. "
-                            f"Текущий статус OZON: {posting.status or 'unknown'}."
+                            f"Текущий статус Ozon: {posting.status or 'unknown'}."
                         ),
                     )
                     return True
@@ -1374,7 +1374,7 @@ class OzonIntegration:
                     message_id,
                     original,
                     (
-                        "✅ OZON-заказ собран. "
+                        "✅ Ozon-заказ собран. "
                         "Отправление переведено в ожидание отгрузки."
                     ),
                 )
@@ -1383,7 +1383,7 @@ class OzonIntegration:
             log.exception("Ozon order callback failed: %s", data)
             await self.tg.send_message(
                 chat_id,
-                f"⚠️ Не удалось обработать OZON-заказ: {exc}",
+                f"⚠️ Не удалось обработать Ozon-заказ: {exc}",
             )
             return True
 

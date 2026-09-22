@@ -86,9 +86,9 @@ async function loadInventory() {
       ['Мой склад', totals.local],
       ['Доступно для заказа', totals.available],
       ['WB FBS', totals.wb_fbs],
-      ['OZON FBS', totals.ozon_fbs],
-      ['На складах WB', totals.wb_warehouses],
-      ['Склад OZON (FBO)', totals.ozon_fbo],
+      ['Ozon FBS', totals.ozon_fbs],
+      ['FBW', totals.wb_warehouses],
+      ['FBO', totals.ozon_fbo],
       ['Расхождений', totals.drift]
     ].map(x => '<div class="card"><div class="n">'+esc(x[1])+'</div><div class="l">'+esc(x[0])+'</div></div>').join('');
     renderInventory();
@@ -98,14 +98,14 @@ function renderInventory() {
   const q = document.getElementById('inventorySearch').value.trim().toLowerCase();
   const rows = inventoryRows.filter(x => !q || x.sku.toLowerCase().includes(q) || x.title.toLowerCase().includes(q));
   if (!rows.length) { document.getElementById('inventoryBody').innerHTML='<div class="empty">Ничего не найдено</div>'; return; }
-  let html = '<div class="table-wrap"><table><thead><tr><th>Товар</th><th>Мой склад</th><th>Доступно для заказа</th><th>WB FBS</th><th>Склады WB</th><th>OZON FBS</th><th>Склад OZON (FBO)</th><th>Состояние</th></tr></thead><tbody>';
+  let html = '<div class="table-wrap"><table><thead><tr><th>Товар</th><th>Мой склад</th><th>Доступно для заказа</th><th>WB FBS</th><th>FBW</th><th>Ozon FBS</th><th>FBO</th><th>Состояние</th></tr></thead><tbody>';
   for (const x of rows) {
     const badges = [];
     if (x.fbs_suppressed) {
       badges.push('<span class="badge warn">WB FBS намеренно 0</span>');
     }
     if (x.ozon_fbs_suppressed) {
-      badges.push('<span class="badge warn">OZON FBS намеренно 0</span>');
+      badges.push('<span class="badge warn">Ozon FBS намеренно 0</span>');
     }
     for (const channel of (x.drift_channels || [])) {
       badges.push('<span class="badge bad">'+esc(channel)+' ≠ доступно</span>');

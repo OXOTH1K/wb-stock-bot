@@ -244,7 +244,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         self.assertGreaterEqual(len(self.tg.sent), 2)
         text = self.tg.sent[-1][1]
-        self.assertIn("Остатки OZON", text)
+        self.assertIn("Остатки Ozon", text)
         self.assertIn("FBS", text)
         self.assertIn("FBO", text)
         self.assertIn("SKU-A", text)
@@ -266,7 +266,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         alerts = [
             item
             for item in self.tg.broadcasts
-            if "Товар появился на складе OZON" in item[1]
+            if "Товар появился в FBO" in item[1]
         ]
         self.assertEqual(len(alerts), 1)
         self.assertIn("SKU-A", alerts[0][1])
@@ -316,7 +316,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "marketplace_stock",
         )
         self.assertIn(
-            "OZON FBS обнулён",
+            "Ozon FBS обнулён",
             self.tg.edits[-1][2],
         )
 
@@ -338,7 +338,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         alerts = [
             item
             for item in self.tg.broadcasts
-            if "закончился в OZON FBS и FBO" in item[1]
+            if "закончился в Ozon FBS и FBO" in item[1]
         ]
         self.assertEqual(len(alerts), 1)
         self.assertIn("ozstock:101:add1", str(alerts[0][2]))
@@ -348,7 +348,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         alerts_again = [
             item
             for item in self.tg.broadcasts
-            if "закончился в OZON FBS и FBO" in item[1]
+            if "закончился в Ozon FBS и FBO" in item[1]
         ]
         self.assertEqual(len(alerts_again), 1)
 
@@ -392,7 +392,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(catalog["OZON-ONLY"]["external_id"], "202")
         self.assertEqual(stocks, {"SKU-A": 5, "OZON-ONLY": 4})
         self.assertEqual(len(self.tg.broadcasts), 1)
-        self.assertIn("Новый FBS-заказ OZON", self.tg.broadcasts[0][1])
+        self.assertIn("Новый Ozon FBS-заказ", self.tg.broadcasts[0][1])
         self.assertIn("SKU-A", self.tg.broadcasts[0][1])
 
         await self.ozon.refresh_orders()
@@ -412,7 +412,7 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.shipped, [posting_number])
         self.assertEqual(self.ozon._state(posting_number), "assembled")
         self.assertNotIn(posting_number, self.ozon.current_pending)
-        self.assertIn("OZON-заказ собран", self.tg.edits[-1][2])
+        self.assertIn("Ozon-заказ собран", self.tg.edits[-1][2])
 
         await self.ozon.handle_callback(
             123,

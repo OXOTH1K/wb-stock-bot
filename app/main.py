@@ -34,7 +34,11 @@ async def amain() -> None:
                 )
             )
             tg = await stack.enter_async_context(
-                TelegramBot(settings.telegram_bot_token)
+                TelegramBot(
+                    settings.telegram_bot_token,
+                    wb_emoji_id=settings.telegram_wb_emoji_id,
+                    ozon_emoji_id=settings.telegram_ozon_emoji_id,
+                )
             )
 
             service = StockMonitorService(settings, wb, tg, db)
