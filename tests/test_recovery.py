@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -97,6 +98,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_stock_alert_survives_telegram_failure(self):
         tg = FlakyTelegram(fail_broadcasts=1)
         service = object.__new__(StockMonitorService)
+        service._alert_delivery_lock = asyncio.Lock()
         service.products = {100: Product(100, "SKU-100", "Product", (1,))}
         service.fbs_stock = {100: 3}
         service.wb_stock = {100: 4}
@@ -120,6 +122,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_stale_pending_stock_alert_is_discarded(self):
         tg = FlakyTelegram()
         service = object.__new__(StockMonitorService)
+        service._alert_delivery_lock = asyncio.Lock()
         service.products = {100: Product(100, "SKU-100", "Product", (1,))}
         service.fbs_stock = {100: 0}
         service.wb_stock = {100: 0}
