@@ -1779,8 +1779,8 @@ class StockMonitorService:
 
     async def _notify_error_once(self, key: str, exc: Exception) -> None:
         now = time.monotonic()
-        last = self._error_notified_at.get(key, 0.0)
-        if now - last < 3600:
+        last = self._error_notified_at.get(key)
+        if last is not None and now - last < 3600:
             return
         self._error_notified_at[key] = now
         try:

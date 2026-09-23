@@ -30,7 +30,7 @@ class BackgroundResilienceTests(unittest.IsolatedAsyncioTestCase):
                 setattr(service, refresh_name, refresh)
                 with patch("app.service.asyncio.sleep", new=AsyncMock(
                     side_effect=[None, None, asyncio.CancelledError()]
-                )), self.assertLogs("app.service", level="ERROR"):
+                )), patch("app.service.time", SimpleNamespace(monotonic=lambda: 10.0)), self.assertLogs("app.service", level="ERROR"):
                     with self.assertRaises(asyncio.CancelledError):
                         await getattr(service, loop_name)()
                 self.assertEqual(refresh.await_count, 2)
