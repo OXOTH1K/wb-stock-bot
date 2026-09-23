@@ -47,6 +47,7 @@ class StockMonitorService:
         self._catalog_lock = asyncio.Lock()
         self._fbs_lock = asyncio.Lock()
         self._wb_lock = asyncio.Lock()
+        self._alert_delivery_lock = asyncio.Lock()
         self._error_notified_at: dict[str, float] = {}
         self._fbs_loaded = False
         self._wb_loaded = False
@@ -208,15 +209,16 @@ class StockMonitorService:
 
             key = f"wb_appearance:{nm_id}"
             self.db.put_pending_alert(key, "wb_appearance", nm_id, old_qty, new_qty)
-            await self._deliver_pending_alert(
-                key, "wb_appearance", nm_id, old_qty, new_qty
-            )
+        await self._flush_pending_alerts()
 
     async def _flush_pending_alerts(self) -> None:
-        for alert_key, alert_type, nm_id, old_qty, new_qty in self.db.list_pending_alerts():
-            await self._deliver_pending_alert(
-                alert_key, alert_type, nm_id, old_qty, new_qty
-            )
+        # Read the queue only after acquiring the lock. FBS and FBW refreshes
+        # otherwise send the same pending row while the first send is awaiting IO.
+        async with self._alert_delivery_lock:
+            for alert_key, alert_type, nm_id, old_qty, new_qty in self.db.list_pending_alerts():
+                await self._deliver_pending_alert(
+                    alert_key, alert_type, nm_id, old_qty, new_qty
+                )
 
     async def _deliver_pending_alert(
         self,
@@ -237,6 +239,14 @@ class StockMonitorService:
         if alert_type == "wb_appearance":
             fbs_qty = self.fbs_stock.get(nm_id, 0)
             wb_qty = self.wb_stock.get(nm_id, 0)
+            if any(
+                self.db.stock_decision_matches(
+                    nm_id, "fbszero", fbs_qty, wb_qty, decision
+                )
+                for decision in ("skip", "notified")
+            ):
+                self.db.delete_pending_alert(alert_key)
+                return
             sku = product.vendor_code or f"WB-{nm_id}"
             if (
                 fbs_qty <= 0
@@ -368,6 +378,10 @@ class StockMonitorService:
         )
         if alert_type == "depletion":
             self.db.save_stock_decision(nm_id, action, 0, 0, "notified")
+        elif alert_type == "wb_appearance":
+            self.db.save_stock_decision(
+                nm_id, "fbszero", fbs_qty, wb_qty, "notified"
+            )
         self.db.delete_pending_alert(alert_key)
 
     async def reconcile_after_gap(

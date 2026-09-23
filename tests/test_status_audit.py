@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from unittest.mock import AsyncMock
@@ -144,6 +145,45 @@ class StatusAuditTests(unittest.IsolatedAsyncioTestCase):
         await service._flush_pending_alerts()
         self.assertEqual(len(tg.sent), 3)
         self.assertEqual(self.db.list_pending_alerts(), [])
+
+    async def test_concurrent_stock_checks_send_appearance_only_once(self):
+        service, tg = self.service()
+        service.fbs_stock = {100: 2}
+        service.wb_stock = {100: 1}
+        started = asyncio.Event()
+        release = asyncio.Event()
+        broadcast = tg.broadcast
+
+        async def slow_broadcast(*args, **kwargs):
+            started.set()
+            await release.wait()
+            await broadcast(*args, **kwargs)
+
+        tg.broadcast = slow_broadcast
+        first = asyncio.create_task(service._notify_wb_appearances([(100, 0, 1)]))
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            second = asyncio.create_task(service._flush_pending_alerts())
+            await asyncio.sleep(0)
+        finally:
+            release.set()
+        await asyncio.gather(first, second)
+        self.assertEqual(len(tg.sent), 1)
+        self.assertEqual(self.db.list_pending_alerts(), [])
+
+    async def test_appearance_remembers_delivery_and_respects_skip(self):
+        service, tg = self.service()
+        service.fbs_stock = {100: 2}
+        service.wb_stock = {100: 1}
+        await service._notify_wb_appearances([(100, 0, 1)])
+        await service._notify_wb_appearances([(100, 0, 1)])
+        self.assertEqual(len(tg.sent), 1)
+        self.db.save_stock_decision(100, "fbszero", 2, 1, "skip")
+        await service._notify_wb_appearances([(100, 0, 1)])
+        self.assertEqual(len(tg.sent), 1)
+        self.db.clear_stock_decisions(100)
+        await service._notify_wb_appearances([(100, 0, 1)])
+        self.assertEqual(len(tg.sent), 2)
 
     async def test_status_uses_fresh_wb_cache_without_extra_analytics_request(self):
         service, _ = self.service()

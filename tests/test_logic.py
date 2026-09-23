@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 
@@ -29,6 +30,7 @@ class LogicTests(unittest.TestCase):
 
     def _service_for_stock_format(self, fbs, wb):
         service = object.__new__(StockMonitorService)
+        service._alert_delivery_lock = asyncio.Lock()
         service.products = {100: Product(100, "SKU-100", "Product 100", (1,))}
         service.fbs_stock = {100: fbs}
         service.wb_stock = {100: wb}
@@ -69,6 +71,7 @@ class LogicTests(unittest.TestCase):
 
     def test_stock_keyboard_has_next_button(self):
         service = object.__new__(StockMonitorService)
+        service._alert_delivery_lock = asyncio.Lock()
         service.products = {
             100: Product(100, "SKU-100", "Product 100", (1,)),
             200: Product(200, "SKU-200", "Product 200", (2,)),
@@ -181,6 +184,7 @@ class FakeDB:
 class NotificationTests(unittest.IsolatedAsyncioTestCase):
     def _service(self, fbs_qty):
         service = object.__new__(StockMonitorService)
+        service._alert_delivery_lock = asyncio.Lock()
         service.products = {100: Product(100, "SKU-100", "Product 100", (1,))}
         service.fbs_stock = {100: fbs_qty}
         service.wb_stock = {100: 0}
