@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
@@ -78,7 +79,25 @@ class OzonClient:
                 url,
                 headers=self.headers,
                 json=body,
+                allow_redirects=False,
             ) as response:
+                if 300 <= response.status < 400:
+                    # API credentials must never follow an unexpected redirect.
+                    # Omit query, fragment and userinfo from diagnostics.
+                    location = response.headers.get("Location", "")
+                    try:
+                        target = urlsplit(urljoin(url, location))
+                        destination = (
+                            f"{target.scheme}://{target.hostname}{target.path}"
+                            if location else "<missing Location>"
+                        )
+                    except ValueError:
+                        destination = "<invalid Location>"
+                    raise OzonAPIError(
+                        response.status,
+                        f"unexpected redirect for {path} to {destination}; "
+                        "request was not followed; check server network and Ozon API availability",
+                    )
                 text = await response.text()
                 if response.status == 204:
                     return None
@@ -331,9 +350,17 @@ class OzonClient:
                 "/v2/products/stocks",
                 {"stocks": chunk},
             )
+            results = data.get("result") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                raise OzonAPIError(502, "stock update response has no result list")
+            by_sku = {
+                str(item.get("offer_id")): item
+                for item in results if isinstance(item, dict)
+            }
             failures = []
-            for item in (data or {}).get("result", []):
-                if bool(item.get("updated")):
+            for row in chunk:
+                item = by_sku.get(row["offer_id"], {})
+                if item.get("updated") is True and not item.get("errors"):
                     continue
                 errors = item.get("errors") or []
                 detail = "; ".join(
@@ -342,7 +369,7 @@ class OzonClient:
                     if isinstance(error, dict)
                 )
                 failures.append(
-                    f"{item.get('offer_id') or 'unknown'}: "
+                    f"{row['offer_id']}: "
                     f"{detail or 'not updated'}"
                 )
             if failures:

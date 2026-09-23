@@ -247,7 +247,10 @@ class OzonIntegration:
         await self.client.set_fbs_stocks(
             warehouse_id, clean
         )
+        previous = self.db.get_channel_stock("ozon_fbs", tuple(clean))
         for sku, quantity in clean.items():
+            if previous.get(sku) != quantity:
+                self._clear_stock_decisions(sku)
             self.db.set_channel_stock(
                 "ozon_fbs", sku, quantity
             )
@@ -294,7 +297,6 @@ class OzonIntegration:
         if (
             notify
             and self.inventory is not None
-            and (previous_fbs or previous_fbo)
         ):
             await self._notify_stock_transitions(
                 previous_fbs,
@@ -503,12 +505,11 @@ class OzonIntegration:
             or mass_zeroed
         ):
             return
-        if self._stock_decision_matches(
-            sku,
-            "add",
-            fbs_qty,
-            fbo_qty,
-            "notified",
+        if any(
+            self._stock_decision_matches(
+                sku, "add", fbs_qty, fbo_qty, decision
+            )
+            for decision in ("notified", "skip")
         ):
             return
         keyboard = self._depletion_keyboard(sku)
@@ -546,11 +547,12 @@ class OzonIntegration:
         for sku in sorted(set(current_fbs) | set(current_fbo)):
             old_fbs = previous_fbs.get(sku)
             old_fbo = previous_fbo.get(sku)
-            if old_fbs is None or old_fbo is None:
-                continue
             new_fbs = int(current_fbs.get(sku, 0))
             new_fbo = int(current_fbo.get(sku, 0))
-            if int(old_fbs) != new_fbs or int(old_fbo) != new_fbo:
+            if (
+                (old_fbs is not None and int(old_fbs) != new_fbs)
+                or (old_fbo is not None and int(old_fbo) != new_fbo)
+            ):
                 self._clear_stock_decisions(sku)
 
             local = self.inventory.local_quantity(sku)
@@ -559,7 +561,7 @@ class OzonIntegration:
                 "ozon", sku
             )
             if (
-                int(old_fbo) == 0
+                old_fbo == 0
                 and new_fbo > 0
                 and new_fbs > 0
                 and available > 0
@@ -598,15 +600,11 @@ class OzonIntegration:
                         "notified",
                     )
 
-            if (
-                int(old_fbs) + int(old_fbo) > 0
-                and new_fbs + new_fbo == 0
-            ):
+            if new_fbs + new_fbo == 0:
                 await self._notify_current_depletion(sku)
 
             if (
-                int(old_fbo) > 0
-                and new_fbo == 0
+                new_fbo == 0
                 and reason == "marketplace_stock"
             ):
                 restore_qty = available
@@ -620,6 +618,9 @@ class OzonIntegration:
                 )
                 if (
                     keyboard is not None
+                    and not self._stock_decision_matches(
+                        sku, "restore", new_fbs, new_fbo, "skip"
+                    )
                     and not self._stock_decision_matches(
                         sku,
                         "restore",

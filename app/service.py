@@ -173,24 +173,26 @@ class StockMonitorService:
         await self.refresh_wb(notify=True, respect_min_interval=True)
 
     async def _notify_total_depletions(self) -> None:
-        """Notify only on a combined transition from available to zero everywhere.
-
-        The combined state is persisted separately as ``total``. This avoids false
-        alerts when only FBS or only WB reaches zero and also makes restarts safe:
-        we do not treat a not-yet-loaded counterpart as a real zero.
-        """
+        """Queue transitions and recover zeros already written by shared sync."""
         current_total = {
             nm_id: self.fbs_stock.get(nm_id, 0) + self.wb_stock.get(nm_id, 0)
             for nm_id in self.products
         }
         transitions = self.db.update_many("total", current_total)
-        for nm_id, old_qty, new_qty in transitions:
-            if old_qty <= 0 or new_qty != 0:
+        candidates = {nm_id: (old, new) for nm_id, old, new in transitions}
+        if getattr(self, "shared_inventory", None) is not None:
+            for nm_id, quantity in current_total.items():
+                if quantity == 0:
+                    candidates.setdefault(nm_id, (0, 0))
+        for nm_id, (old_qty, new_qty) in candidates.items():
+            if new_qty != 0:
                 continue
 
             key = f"depletion:{nm_id}"
             self.db.put_pending_alert(key, "depletion", nm_id, old_qty, new_qty)
-            await self._deliver_pending_alert(key, "depletion", nm_id, old_qty, new_qty)
+        # Persist every candidate before sending: one Telegram failure must not
+        # discard the remaining products from this snapshot.
+        await self._flush_pending_alerts()
 
     async def _notify_wb_appearances(
         self, transitions: list[tuple[int, int, int]]
@@ -271,6 +273,25 @@ class StockMonitorService:
                 self.db.delete_pending_alert(alert_key)
                 return
             sku = product.vendor_code or f"WB-{nm_id}"
+            if (
+                shared_inventory is not None
+                and sku in self.db.get_available_snapshot("mass_shared")
+            ):
+                self.db.delete_pending_alert(alert_key)
+                return
+            restore = (
+                shared_inventory is not None
+                and self.db.get_channel_suppression_reason("wb", sku)
+                == "marketplace_stock"
+                and shared_inventory.available_quantity(sku) > 0
+            ) or bool(self.db.get_saved_product_fbs("wb_auto", nm_id))
+            action = "fbsrestore" if restore else "fbsadd"
+            if any(
+                self.db.stock_decision_matches(nm_id, action, 0, 0, decision)
+                for decision in ("skip", "notified")
+            ):
+                self.db.delete_pending_alert(alert_key)
+                return
             wb_reason = (
                 self.db.get_channel_suppression_reason("wb", sku)
                 if shared_inventory is not None
@@ -345,6 +366,8 @@ class StockMonitorService:
             text,
             reply_markup=keyboard,
         )
+        if alert_type == "depletion":
+            self.db.save_stock_decision(nm_id, action, 0, 0, "notified")
         self.db.delete_pending_alert(alert_key)
 
     async def reconcile_after_gap(
@@ -1760,10 +1783,14 @@ class StockMonitorService:
         if now - last < 3600:
             return
         self._error_notified_at[key] = now
-        await self.tg.broadcast(
-            self.settings.telegram_chat_ids,
-            f"⚠️ Ошибка проверки {key}: {exc}\nПовторная попытка будет автоматически.",
-        )
+        try:
+            await self.tg.broadcast(
+                self.settings.telegram_chat_ids,
+                f"⚠️ Ошибка проверки {key}: {exc}\nПовторная попытка будет автоматически.",
+            )
+        except Exception:
+            # Reporting an outage must not terminate the monitoring loop.
+            log.exception("Could not send %s refresh error to Telegram", key)
 
 
 def format_dt(value: datetime | None) -> str:

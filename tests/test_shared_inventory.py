@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import AsyncMock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -67,6 +68,22 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.db.close()
         self.tmp.cleanup()
+
+    async def test_failed_ozon_write_is_retried_by_background_reconciliation(self):
+        await self.shared.initialize()
+        real_write = self.ozon.set_fbs_stock
+        self.ozon.set_fbs_stock = AsyncMock(side_effect=RuntimeError("redirect"))
+        with self.assertRaisesRegex(RuntimeError, "redirect"):
+            await self.shared.set_available_stock("SKU-A", 2)
+        self.assertEqual(self.shared.available_quantity("SKU-A"), 2)
+        self.assertEqual(self.db.get_channel_stock("ozon_fbs", ("SKU-A",))["SKU-A"], 3)
+
+        self.ozon.set_fbs_stock = AsyncMock(wraps=real_write)
+        await self.shared.reconcile_all()
+        self.ozon.set_fbs_stock.assert_awaited_once_with("SKU-A", 2)
+        self.assertEqual(self.db.get_channel_stock("ozon_fbs", ("SKU-A",))["SKU-A"], 2)
+        await self.shared.reconcile_all()
+        self.assertEqual(self.ozon.set_fbs_stock.await_count, 1)
 
     async def test_legacy_wb_auto_zero_migrates_after_warehouse_stock_ended(self):
         self.wb.fbs_stock[100] = 0
