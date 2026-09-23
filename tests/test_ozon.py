@@ -381,6 +381,31 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ("SKU-A", 5, "telegram_ozon_stock_add"),
         )
 
+    async def test_background_recovers_zero_snapshot_and_retries_failed_alert(self):
+        self.ozon.set_shared_inventory(FakeInventory(
+            self.db, local={"SKU-A": 5, "OZON-ONLY": 4},
+            available={"SKU-A": 0, "OZON-ONLY": 4},
+        ))
+        self.client.stocks["SKU-A"] = 0
+        await self.ozon.refresh_catalog_and_stocks(notify=False)
+        broadcast = self.tg.broadcast
+        self.tg.broadcast = AsyncMock(side_effect=RuntimeError("offline"))
+        with self.assertRaisesRegex(RuntimeError, "offline"):
+            await self.ozon.refresh_catalog_and_stocks()
+        self.tg.broadcast = broadcast
+        await self.ozon.refresh_catalog_and_stocks()
+        self.assertEqual(len(self.tg.broadcasts), 1)
+        await self.ozon.refresh_catalog_and_stocks()
+        self.assertEqual(len(self.tg.broadcasts), 1)
+        self.ozon._save_stock_decision("SKU-A", "add", 0, 0, "skip")
+        await self.ozon.refresh_catalog_and_stocks()
+        self.assertEqual(len(self.tg.broadcasts), 1)
+        # Shared writes can replenish and deplete between two stock polls.
+        await self.ozon.set_fbs_stock("SKU-A", 2)
+        await self.ozon.set_fbs_stock("SKU-A", 0)
+        await self.ozon.refresh_catalog_and_stocks()
+        self.assertEqual(len(self.tg.broadcasts), 2)
+
     async def test_initialize_saves_catalog_stocks_and_notifies_once(self):
         await self.ozon.initialize()
 

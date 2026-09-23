@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import AsyncMock
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -104,6 +105,45 @@ class StatusAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fbsrestore:200:yes", callbacks)
         self.assertIn("fbsadd:300:1", callbacks)
         self.assertIn("fbsadd:300:5", callbacks)
+
+    async def test_background_recovers_already_zero_stock_once_and_respects_skip(self):
+        service, tg = self.service()
+        service.products = {300: service.products[300]}
+        service.shared_inventory = SimpleNamespace(
+            available_quantity=lambda sku: 0,
+            local_quantity=lambda sku: 5,
+        )
+        service.wb_stock = {300: 0}
+        # Shared inventory writes total=0 before the periodic stock check.
+        self.db.update_many("total", {300: 0})
+        await service.refresh_fbs()
+        self.assertEqual(len(tg.sent), 1)
+        await service.refresh_fbs()
+        self.assertEqual(len(tg.sent), 1)
+        self.db.save_stock_decision(300, "fbsadd", 0, 0, "skip")
+        await service.refresh_fbs()
+        self.assertEqual(len(tg.sent), 1)
+        # Replenishment followed by depletion starts a new notification cycle.
+        service.wb.fbs_by_chrt[3] = 2
+        await service.refresh_fbs()
+        service.wb.fbs_by_chrt[3] = 0
+        await service.refresh_fbs()
+        self.assertEqual(len(tg.sent), 2)
+
+    async def test_all_depletions_survive_failure_sending_first_alert(self):
+        service, tg = self.service()
+        service.fbs_stock = {100: 0, 200: 0, 300: 0}
+        service.wb_stock = dict(service.fbs_stock)
+        self.db.update_many("total", {100: 1, 200: 1, 300: 1})
+        broadcast = tg.broadcast
+        tg.broadcast = AsyncMock(side_effect=RuntimeError("offline"))
+        with self.assertRaisesRegex(RuntimeError, "offline"):
+            await service._notify_total_depletions()
+        self.assertEqual(len(self.db.list_pending_alerts()), 3)
+        tg.broadcast = broadcast
+        await service._flush_pending_alerts()
+        self.assertEqual(len(tg.sent), 3)
+        self.assertEqual(self.db.list_pending_alerts(), [])
 
     async def test_status_uses_fresh_wb_cache_without_extra_analytics_request(self):
         service, _ = self.service()

@@ -17,6 +17,27 @@ from .telegram import TelegramBot
 from .wb_client import WildberriesClient
 
 
+async def wait_for_shutdown(stop_event, tasks):
+    """Fail visibly if a worker exits so systemd can restart the service."""
+    stop_task = asyncio.create_task(stop_event.wait(), name="shutdown")
+    try:
+        done, _ = await asyncio.wait(
+            [stop_task, *tasks], return_when=asyncio.FIRST_COMPLETED
+        )
+        if stop_task in done:
+            return
+        for task in tasks:
+            if task in done:
+                if not task.cancelled():
+                    task.result()
+                raise RuntimeError(
+                    f"Background task {task.get_name()} stopped unexpectedly"
+                )
+    finally:
+        stop_task.cancel()
+        await asyncio.gather(stop_task, return_exceptions=True)
+
+
 async def amain() -> None:
     settings = Settings.from_env()
     logging.basicConfig(
@@ -273,7 +294,7 @@ async def amain() -> None:
                     pass
 
             try:
-                await stop_event.wait()
+                await wait_for_shutdown(stop_event, tasks)
             finally:
                 for task in tasks:
                     task.cancel()
