@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from .db import StateDB
+from .channel_fbs import ChannelFBSControl
 
 if TYPE_CHECKING:
     from .orders import FBSOrder
@@ -29,6 +30,15 @@ class SharedInventoryService:
         self.wb_service = wb_service
         self.ozon = ozon
         self._lock = asyncio.Lock()
+        self.channel_fbs = ChannelFBSControl(self)
+
+    async def zero_fbs_channel(self, channel):
+        async with self._lock:
+            return await self.channel_fbs.zero(channel)
+
+    async def restore_fbs_channel(self, channel):
+        async with self._lock:
+            return await self.channel_fbs.restore(channel)
 
     @staticmethod
     def _wb_sku(product) -> str:
@@ -64,7 +74,7 @@ class SharedInventoryService:
             self.db.clear_stock_decisions(product.nm_id)
 
     def is_suppressed(self, channel: str, sku: str) -> bool:
-        return self.db.is_channel_suppressed(channel, sku)
+        return self.db.is_channel_suppressed(channel, sku) or self.channel_fbs.paused(channel, sku)
 
     async def initialize(self) -> None:
         wb_by_sku = self._wb_by_sku()
@@ -256,6 +266,7 @@ class SharedInventoryService:
             )
 
         self.db.set_meta("inventory_model_full_local_v1", "1")
+        self.channel_fbs.migrate_legacy()
 
         for sku in sorted(changed_skus):
             await self.sync_sku(
@@ -340,6 +351,7 @@ class SharedInventoryService:
                 )
                 if not applied:
                     continue
+                self.channel_fbs.consume(clean_sku, int(quantity))
                 changed[clean_sku] = after
                 self._clear_wb_decisions(clean_sku)
                 if before < int(quantity):
@@ -424,6 +436,7 @@ class SharedInventoryService:
             available = self.db.set_order_available(
                 sku, quantity, reason=reason
             )
+            self.channel_fbs.explicit_set(sku)
             self._clear_wb_decisions(sku)
             # An explicit available-stock edit supersedes only mass-zero
             # restoration. Platform-specific marketplace_stock suppression
@@ -455,14 +468,15 @@ class SharedInventoryService:
             return
         if self.wb_service.warehouse is None:
             raise RuntimeError("WB seller warehouse is not initialized")
-        if not product.chrt_ids or (quantity != 0 and len(product.chrt_ids) != 1):
+        variants = self.channel_fbs.wb_variants(sku, quantity)
+        if not product.chrt_ids or (quantity != 0 and len(product.chrt_ids) != 1 and variants is None):
             raise RuntimeError(
                 f"WB SKU {sku} has multiple variants; "
                 "shared stock cannot choose a chrtId safely"
             )
         await self.wb_service.wb.set_fbs_stocks(
             self.wb_service.warehouse.id,
-            {chrt_id: int(quantity) for chrt_id in product.chrt_ids},
+            variants if variants is not None else {chrt_id: int(quantity) for chrt_id in product.chrt_ids},
         )
         self.wb_service.fbs_stock[product.nm_id] = int(quantity)
         self.db.update_many(
@@ -516,6 +530,12 @@ class SharedInventoryService:
             == "marketplace_stock"
             else quantity
         )
+        wb_target = self.channel_fbs.target("wb", sku, wb_target)
+        ozon_target = self.channel_fbs.target("ozon", sku, ozon_target)
+        if self.db.get_channel_suppression_reason("wb", sku) == "marketplace_stock":
+            wb_target = 0
+        if self.db.get_channel_suppression_reason("ozon", sku) == "marketplace_stock":
+            ozon_target = 0
 
         if skip_channel != "wb":
             product = self._wb_by_sku().get(sku)

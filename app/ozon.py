@@ -512,6 +512,9 @@ class OzonIntegration:
     ) -> None:
         if self.inventory is None:
             return
+        control = getattr(self.inventory, "channel_fbs", None)
+        if control is not None and control.paused("ozon", sku):
+            return
         fbs_qty = int(
             self.db.get_channel_stock(
                 "ozon_fbs", (sku,)
@@ -797,13 +800,7 @@ class OzonIntegration:
             return False
         command = parts[0].split("@", 1)[0].lower()
         args = parts[1:]
-        relevant = {
-            "/stocks_ozon",
-            "/ozon_fbs_zero_all",
-            "/ozon_fbs_restore",
-            "/fbs_zero_all_ozon",
-            "/fbs_restore_ozon",
-        }
+        relevant = {"/stocks_ozon", "/set_fbs_ozon_zero", "/restore_fbs_ozon"}
         if command not in relevant:
             return False
         if chat_id not in self.settings.telegram_chat_ids:
@@ -828,77 +825,21 @@ class OzonIntegration:
             await self._send_stocks_page(chat_id, page)
             return True
 
-        if command in {
-            "/ozon_fbs_zero_all",
-            "/fbs_zero_all_ozon",
-        }:
-            await self.tg.send_message(
-                chat_id,
-                (
-                    "⚠️ Обнулить «Доступно для заказа» для всех товаров?\n"
-                    "«Мой склад» не изменится, WB FBS / Ozon FBS станут 0."
-                ),
-                reply_markup={
-                    "inline_keyboard": [
-                        [
-                            {
-                                "text": "Обнулить Ozon FBS",
-                                "callback_data": "ozfbsallzero:yes",
-                            },
-                            {
-                                "text": "Отмена",
-                                "callback_data": "ozfbsallzero:skip",
-                            },
-                        ]
-                    ]
-                },
-            )
+        if self.inventory is None:
+            raise RuntimeError("Общий склад не инициализирован")
+        restore = command == "/restore_fbs_ozon"
+        if restore and not self.inventory.channel_fbs.pending_snapshot("ozon"):
+            await self.tg.send_message(chat_id, "ℹ️ Сохранённых остатков Ozon FBS для восстановления нет.")
             return True
-
-        mass_skus = [
-            sku
-            for sku in self.db.list_channel_suppressions("ozon")
-            if self.db.get_channel_suppression_reason(
-                "ozon", sku
-            )
-            == "mass"
-        ]
-        if not mass_skus:
-            await self.tg.send_message(
-                chat_id,
-                "ℹ️ Массово обнулённых Ozon FBS-остатков нет.",
-            )
-            return True
-        saved = self.db.get_available_snapshot(
-            "mass_shared"
-        )
-        total = sum(int(value) for value in saved.values())
-        if not saved:
-            await self.tg.send_message(
-                chat_id,
-                "ℹ️ Сохранённого массового значения «Доступно для заказа» нет.",
-            )
-            return True
+        action = "restore" if restore else "zero"
         await self.tg.send_message(
             chat_id,
-            (
-                f"♻️ Восстановить сохранённое «Доступно для заказа»?\n"
-                f"Товаров: {len(saved)}, суммарно: {total} шт."
-            ),
-            reply_markup={
-                "inline_keyboard": [
-                    [
-                        {
-                            "text": "Восстановить Ozon FBS",
-                            "callback_data": "ozfbsallrestore:yes",
-                        },
-                        {
-                            "text": "Отмена",
-                            "callback_data": "ozfbsallrestore:skip",
-                        },
-                    ]
-                ]
-            },
+            "♻️ Восстановить сохранённые остатки только Ozon FBS с учётом продаж?"
+            if restore else "⚠️ Сохранить текущие остатки и обнулить только Ozon FBS?",
+            reply_markup={"inline_keyboard": [[
+                {"text": "Восстановить Ozon FBS" if restore else "Обнулить Ozon FBS", "callback_data": f"channelozon:{action}:yes"},
+                {"text": "Отмена", "callback_data": f"channelozon:{action}:skip"},
+            ]]},
         )
         return True
 
@@ -1090,7 +1031,8 @@ class OzonIntegration:
         original: str = "",
     ) -> bool:
         if not (
-            data.startswith("ozonord:")
+            data.startswith("channelozon:")
+            or data.startswith("ozonord:")
             or data.startswith("ozstock:")
             or data.startswith("ozstocks:")
             or data.startswith("ozfbsallzero:")
@@ -1122,46 +1064,27 @@ class OzonIntegration:
                 )
             return True
 
-        if data.startswith("ozfbsallzero:"):
-            try:
-                if data.endswith(":skip"):
-                    await self._finish(
-                        chat_id,
-                        message_id,
-                        original,
-                        "⏭ Массовое обнуление Ozon FBS отменено.",
-                    )
-                elif data.endswith(":yes"):
-                    await self._zero_all_fbs(
-                        chat_id, message_id, original
-                    )
-            except Exception as exc:
-                log.exception("OZON mass FBS zero failed")
-                await self.tg.send_message(
-                    chat_id,
-                    f"⚠️ Не удалось обнулить Ozon FBS: {exc}",
-                )
+        if data.startswith(("ozfbsallzero:", "ozfbsallrestore:")):
+            await self._finish(chat_id, message_id, original,
+                "Эта кнопка устарела. Используйте /set_fbs_ozon_zero или /restore_fbs_ozon.")
             return True
-
-        if data.startswith("ozfbsallrestore:"):
+        if data.startswith("channelozon:"):
             try:
                 if data.endswith(":skip"):
-                    await self._finish(
-                        chat_id,
-                        message_id,
-                        original,
-                        "⏭ Восстановление Ozon FBS отменено.",
-                    )
-                elif data.endswith(":yes"):
-                    await self._restore_all_fbs(
-                        chat_id, message_id, original
-                    )
+                    result = "⏭ Операция отменена."
+                elif data in {"channelozon:zero:yes", "channelozon:restore:yes"}:
+                    if self.inventory is None:
+                        raise RuntimeError("Общий склад не инициализирован")
+                    restore = data == "channelozon:restore:yes"
+                    method = self.inventory.restore_fbs_channel if restore else self.inventory.zero_fbs_channel
+                    count, total = await method("ozon")
+                    result = ("✅ Ozon FBS восстановлен" if restore else "✅ Ozon FBS обнулён") + f". Товаров: {count}, " + ("восстановлено" if restore else "сохранено") + f": {total} шт."
+                else:
+                    return True
+                await self._finish(chat_id, message_id, original, result)
             except Exception as exc:
-                log.exception("OZON mass FBS restore failed")
-                await self.tg.send_message(
-                    chat_id,
-                    f"⚠️ Не удалось восстановить Ozon FBS: {exc}",
-                )
+                log.exception("Ozon channel stock operation failed")
+                await self.tg.send_message(chat_id, f"⚠️ Операция Ozon FBS не завершена: {exc}")
             return True
 
         if data.startswith("ozstock:"):
