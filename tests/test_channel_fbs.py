@@ -195,3 +195,45 @@ class ChannelFBSTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(text.count(new), 1)
         for old in ("/fbs_zero_all", "/fbs_restore", "/ozon_fbs_zero_all", "/ozon_fbs_restore"):
             self.assertNotIn(old, text)
+
+    async def test_set_forces_wb_despite_fbw_stock_but_preserves_ozon_pause(self):
+        self.wb.wb_stock[100] = 1
+        await self.inventory.suppress_channel("wb", "SKU")
+        self.db.save_product_fbs("wb_auto", 100, {11: 3})
+        await self.inventory.zero_fbs_channel("ozon")
+        await self.wb.handle_message(123, "/set SKU 5")
+        self.assertEqual((self.remote_wb[11], self.remote_ozon["SKU"]), (5, 0))
+        self.assertIsNone(self.db.get_channel_suppression_reason("wb", "SKU"))
+        self.assertEqual(self.db.get_saved_product_fbs("wb_auto", 100), {})
+        await self.inventory.reconcile_all()
+        self.assertEqual((self.remote_wb[11], self.remote_ozon["SKU"]), (5, 0))
+        response = self.tg.send_message.call_args.args[1]
+        self.assertIn("WB FBS: 5 шт.", response)
+        self.assertIn("Ozon FBS: 0 шт. — массовая пауза сохранена", response)
+        await self.wb.handle_message(123, "/set SKU 5")
+        self.assertEqual(self.remote_wb[11], 5)
+
+    async def test_set_forces_ozon_but_preserves_wb_pause(self):
+        await self.inventory.suppress_channel("ozon", "SKU")
+        await self.inventory.zero_fbs_channel("wb")
+        await self.wb.handle_message(123, "/set SKU 5")
+        self.assertEqual((self.remote_wb[11], self.remote_ozon["SKU"]), (0, 5))
+        self.assertIsNone(self.db.get_channel_suppression_reason("ozon", "SKU"))
+
+    async def test_set_reports_partial_failure_without_hiding_saved_limit(self):
+        self.ozon.set_fbs_stock = AsyncMock(side_effect=RuntimeError("rate limited"))
+        with self.assertLogs("app.service", level="ERROR"):
+            await self.wb.handle_message(123, "/set SKU 5")
+        self.assertEqual(self.remote_wb[11], 5)
+        response = self.tg.send_message.call_args.args[1]
+        self.assertIn("WB FBS: 5 шт.", response)
+        self.assertIn("Доступно для заказа: 5 шт.", response)
+        self.assertIn("ожидает синхронизации", response)
+        self.assertIn("повторены автоматически", response)
+
+    async def test_set_reports_both_pauses_without_reopening_them(self):
+        await self.inventory.zero_fbs_channel("wb")
+        await self.inventory.zero_fbs_channel("ozon")
+        await self.wb.handle_message(123, "/set SKU 5")
+        self.assertEqual((self.remote_wb[11], self.remote_ozon["SKU"]), (0, 0))
+        self.assertIn("товар не выставлен в продажу", self.tg.send_message.call_args.args[1])
