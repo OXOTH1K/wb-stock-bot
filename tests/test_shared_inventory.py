@@ -479,37 +479,57 @@ class SharedInventoryTests(unittest.IsolatedAsyncioTestCase):
             self.shared.local_quantity("OZON-ONLY"), 4
         )
 
-    async def test_mass_zero_does_not_override_individual_suppression(self):
+    async def test_mass_zero_includes_individually_suppressed_products(self):
         await self.shared.initialize()
-        await self.shared.suppress_channel(
-            "ozon", "SKU-A", "marketplace_stock"
-        )
-
+        await self.shared.suppress_channel("ozon", "SKU-A", "marketplace_stock")
         count, total = await self.shared.suppress_wb_mass()
+        self.assertEqual((count, total), (1, 3))
+        self.assertEqual(self.shared.available_quantity("SKU-A"), 0)
+        self.assertEqual(self.wb.fbs_stock[100], 0)
+        self.assertEqual(self.db.get_channel_suppression_reason("ozon", "SKU-A"), "marketplace_stock")
+        restored, restored_total = await self.shared.restore_wb_mass()
+        self.assertEqual((restored, restored_total), (1, 3))
+        self.assertEqual(self.wb.fbs_stock[100], 3)
+        self.assertEqual(self.db.get_channel_stock("ozon_fbs", ("SKU-A",))["SKU-A"], 0)
+        self.assertEqual(self.db.get_channel_suppression_reason("ozon", "SKU-A"), "marketplace_stock")
 
-        self.assertEqual((count, total), (0, 0))
-        self.assertEqual(
-            self.db.get_channel_suppression_reason(
-                "ozon", "SKU-A"
-            ),
-            "marketplace_stock",
-        )
-        self.assertIsNone(
-            self.db.get_channel_suppression_reason(
-                "wb", "SKU-A"
-            )
-        )
+    async def test_mass_zero_continues_after_failure_and_retries_saved_targets(self):
+        await self.shared.initialize()
+        self.db.replace_channel_catalog("ozon", [
+            ("SKU-A", "Alpha", "501"), ("ZZ-LAST", "Last", "502")
+        ])
+        self.db.set_channel_stock("ozon_fbs", "ZZ-LAST", 4)
+        self.db.ensure_local_stock("ZZ-LAST", 4)
+        self.db.ensure_order_available("ZZ-LAST", 4)
+        real_write = self.ozon.set_fbs_stock
 
-        restored, restored_total = (
-            await self.shared.restore_wb_mass()
-        )
-        self.assertEqual((restored, restored_total), (0, 0))
-        self.assertEqual(
-            self.db.get_channel_suppression_reason(
-                "ozon", "SKU-A"
-            ),
-            "marketplace_stock",
-        )
+        async def fail_first(sku, quantity):
+            if sku == "SKU-A":
+                raise RuntimeError("Stock is updated too frequently")
+            await real_write(sku, quantity)
+
+        self.ozon.set_fbs_stock = fail_first
+        with self.assertRaisesRegex(RuntimeError, "Фоновая проверка"):
+            await self.shared.suppress_wb_mass()
+        self.assertEqual(self.db.get_channel_stock("ozon_fbs", ("ZZ-LAST",))["ZZ-LAST"], 0)
+        self.assertEqual(self.db.get_available_snapshot("mass_shared"), {"SKU-A": 3, "ZZ-LAST": 4})
+        self.ozon.set_fbs_stock = AsyncMock(wraps=real_write)
+        await self.shared.suppress_wb_mass()
+        self.ozon.set_fbs_stock.assert_awaited_once_with("SKU-A", 0)
+        self.assertEqual(self.db.get_available_snapshot("mass_shared"), {"SKU-A": 3, "ZZ-LAST": 4})
+
+    async def test_zero_wb_product_with_multiple_variants(self):
+        await self.shared.initialize()
+        self.wb.products[100] = Product(100, "SKU-A", "Alpha", (11, 12))
+        await self.shared.set_available_stock("SKU-A", 0)
+        self.assertEqual(self.wb.wb.writes[-1], (7, {11: 0, 12: 0}))
+
+    async def test_repeated_set_does_not_rewrite_confirmed_stock(self):
+        await self.shared.initialize()
+        await self.shared.set_available_stock("SKU-A", 0)
+        wb_count, ozon_count = len(self.wb.wb.writes), len(self.ozon.writes)
+        await self.shared.set_available_stock("SKU-A", 0)
+        self.assertEqual((len(self.wb.wb.writes), len(self.ozon.writes)), (wb_count, ozon_count))
 
     async def test_manual_available_edit_cancels_mass_restore_for_sku(self):
         await self.shared.initialize()

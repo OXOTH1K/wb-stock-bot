@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
+import time
 from datetime import datetime, timezone
 from html import escape
 from typing import TYPE_CHECKING
 
 from .config import Settings
 from .db import StateDB
-from .ozon_client import OzonClient, OzonPosting
+from .ozon_client import OzonClient, OzonPosting, OzonStockRateLimitError
 from .telegram import TelegramBot
 
 if TYPE_CHECKING:
@@ -31,6 +33,7 @@ class OzonIntegration:
         self.tg = tg
         self.db = db
         self._lock = asyncio.Lock()
+        self._stock_write_lock = asyncio.Lock()
         self.current_pending: dict[str, OzonPosting] = {}
         self.inventory: SharedInventoryService | None = None
         self.warehouse_id: int | None = None
@@ -231,6 +234,10 @@ class OzonIntegration:
     async def set_fbs_stocks(
         self, quantities: dict[str, int]
     ) -> None:
+        async with self._stock_write_lock:
+            await self._set_fbs_stocks(quantities)
+
+    async def _set_fbs_stocks(self, quantities: dict[str, int]) -> None:
         clean = {
             str(sku): int(quantity)
             for sku, quantity in quantities.items()
@@ -244,9 +251,35 @@ class OzonIntegration:
                 "warehouse; set OZON_WAREHOUSE_ID if more than one "
                 "active warehouse exists"
             )
-        await self.client.set_fbs_stocks(
-            warehouse_id, clean
-        )
+        retry_keys = {
+            sku: f"ozon_stock_retry:{warehouse_id}:{sku}" for sku in clean
+        }
+        retries = {
+            sku: json.loads(self.db.get_meta(key) or "{}")
+            for sku, key in retry_keys.items()
+        }
+        now = time.time()
+        for sku, retry in retries.items():
+            remaining = float(retry.get("after", 0)) - now
+            if remaining > 0:
+                raise RuntimeError(
+                    f"Ozon ограничил запись {sku}; повторная попытка через "
+                    f"{math.ceil(remaining)} сек."
+                )
+        try:
+            await self.client.set_fbs_stocks(warehouse_id, clean)
+        except OzonStockRateLimitError as exc:
+            for sku in exc.skus:
+                if sku not in retry_keys:
+                    continue
+                # Application backoff, not a claimed marketplace API limit.
+                delay = min(300, max(60, retries[sku].get("delay", 0) * 2))
+                self.db.set_meta(retry_keys[sku], json.dumps({
+                    "after": time.time() + delay, "delay": delay,
+                }))
+            raise
+        for key in retry_keys.values():
+            self.db.set_meta(key, "")
         previous = self.db.get_channel_stock("ozon_fbs", tuple(clean))
         for sku, quantity in clean.items():
             if previous.get(sku) != quantity:
@@ -609,9 +642,8 @@ class OzonIntegration:
             ):
                 restore_qty = available
                 if restore_qty <= 0:
-                    self.db.clear_channel_suppressed(
-                        "ozon", sku
-                    )
+                    if sku not in self.db.get_available_snapshot("mass_shared"):
+                        self.db.clear_channel_suppressed("ozon", sku)
                     continue
                 keyboard = self._stock_keyboard(
                     sku, "restore"

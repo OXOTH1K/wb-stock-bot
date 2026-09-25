@@ -11,6 +11,7 @@ from app.ozon_client import (
     OzonPosting,
     OzonPostingProduct,
     OzonProduct,
+    OzonStockRateLimitError,
 )
 
 
@@ -405,6 +406,39 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.ozon.set_fbs_stock("SKU-A", 0)
         await self.ozon.refresh_catalog_and_stocks()
         self.assertEqual(len(self.tg.broadcasts), 2)
+
+    async def test_stock_rate_limit_backoff_survives_restart_and_uses_latest_target(self):
+        write = AsyncMock(side_effect=OzonStockRateLimitError(
+            "Stock is updated too frequently", {"SKU-A"}
+        ))
+        self.client.set_fbs_stocks = write
+        with patch("app.ozon.time.time", return_value=1000):
+            with self.assertRaises(OzonStockRateLimitError):
+                await self.ozon.set_fbs_stock("SKU-A", 2)
+        restarted = OzonIntegration(self.settings, self.client, self.tg, self.db)
+        with patch("app.ozon.time.time", return_value=1030):
+            with self.assertRaisesRegex(RuntimeError, "через 30 сек"):
+                await restarted.set_fbs_stock("SKU-A", 0)
+            self.assertEqual(write.await_count, 1)
+            write.side_effect = None
+            await restarted.set_fbs_stock("OZON-ONLY", 0)
+        with patch("app.ozon.time.time", return_value=1061):
+            await restarted.set_fbs_stock("SKU-A", 0)
+        self.assertEqual(write.call_args.args[1], {"SKU-A": 0})
+        self.assertEqual(self.db.get_channel_stock("ozon_fbs", ("SKU-A",))["SKU-A"], 0)
+
+    async def test_stock_poll_preserves_individual_suppression_during_mass_zero(self):
+        self.ozon.set_shared_inventory(FakeInventory(
+            self.db, local={"SKU-A": 5}, available={"SKU-A": 0}
+        ))
+        self.db.set_channel_suppressed("ozon", "SKU-A", "marketplace_stock")
+        self.db.save_available_snapshot("mass_shared", "SKU-A", 3)
+        self.client.stocks["SKU-A"] = 0
+        await self.ozon.refresh_catalog_and_stocks()
+        self.assertEqual(
+            self.db.get_channel_suppression_reason("ozon", "SKU-A"),
+            "marketplace_stock",
+        )
 
     async def test_initialize_saves_catalog_stocks_and_notifies_once(self):
         await self.ozon.initialize()

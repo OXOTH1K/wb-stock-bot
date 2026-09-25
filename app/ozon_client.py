@@ -14,6 +14,12 @@ class OzonAPIError(RuntimeError):
         self.status = int(status)
 
 
+class OzonStockRateLimitError(OzonAPIError):
+    def __init__(self, message: str, skus: set[str]):
+        super().__init__(409, message)
+        self.skus = skus
+
+
 @dataclass(frozen=True)
 class OzonProduct:
     offer_id: str
@@ -358,6 +364,7 @@ class OzonClient:
                 for item in results if isinstance(item, dict)
             }
             failures = []
+            rate_limited = set()
             for row in chunk:
                 item = by_sku.get(row["offer_id"], {})
                 if item.get("updated") is True and not item.get("errors"):
@@ -368,11 +375,17 @@ class OzonClient:
                     for error in errors
                     if isinstance(error, dict)
                 )
+                if "stock is updated too frequently" in detail.lower():
+                    rate_limited.add(row["offer_id"])
                 failures.append(
                     f"{row['offer_id']}: "
                     f"{detail or 'not updated'}"
                 )
             if failures:
+                if rate_limited:
+                    raise OzonStockRateLimitError(
+                        "stock update failed: " + " | ".join(failures), rate_limited
+                    )
                 raise OzonAPIError(
                     409,
                     "stock update failed: " + " | ".join(failures),

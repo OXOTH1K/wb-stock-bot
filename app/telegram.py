@@ -318,7 +318,12 @@ class TelegramBot:
                         if callback_id:
                             # Telegram clients keep a loading indicator visible until
                             # answerCallbackQuery is called, even when no toast is needed.
-                            await self.answer_callback_query(str(callback_id))
+                            try:
+                                await self.answer_callback_query(str(callback_id))
+                            except Exception:
+                                # The update is already consumed. A failed spinner
+                                # acknowledgement must not discard the stock action.
+                                log.exception("Could not acknowledge Telegram callback")
 
                         if callback_handler is not None:
                             message = callback.get("message") or {}
