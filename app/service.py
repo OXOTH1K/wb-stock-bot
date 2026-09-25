@@ -13,6 +13,7 @@ from .db import StateDB
 from .models import Product, ProductSize, SellerWarehouse, aggregate_by_nm, build_products
 from .telegram import TelegramBot
 from .wb_client import WildberriesClient
+from .shared_inventory import StockSyncError
 
 if TYPE_CHECKING:
     from .shared_inventory import SharedInventoryService
@@ -479,7 +480,7 @@ class StockMonitorService:
             "/stocks_main [страница] — остатки «Моего склада»\n"
             "/stock <артикул> — найти товар WB и показать его остатки\n"
             "/zero — показать товары WB с нулём на FBS или FBW\n"
-            "/set <артикул> <количество> — задать «Доступно для заказа»\n"
+            "/set <артикул> <количество> — выставить «Доступно» на площадках без массовой паузы\n"
             "/set_main <артикул> +N|-N — добавить или списать товар на «Моём складе»\n"
             "/set_fbs_ozon_zero — сохранить и обнулить только Ozon FBS\n"
             "/restore_fbs_ozon — восстановить сохранённые остатки Ozon FBS\n"
@@ -488,6 +489,7 @@ class StockMonitorService:
             "[страница] — необязательно, например /stocks_wb 2.\n"
             "Вместо <артикул> и <количество> укажите свои значения без скобок.\n"
             "Пример: /set keychain-goat 5 или /set_main keychain-goat +10.\n"
+            "/set снимает отдельное обнуление товара из уведомления, но сохраняет массовые паузы WB/Ozon.\n"
             "Команды Ozon доступны при подключённом магазине Ozon."
         )
 
@@ -595,22 +597,20 @@ class StockMonitorService:
                         f"Товар с артикулом «{sku}» не найден.",
                     )
                     return
-                available = (
+                sync_error = None
+                try:
                     await self.shared_inventory.set_available_stock(
                         sku,
                         quantity,
                         reason="telegram_set",
+                        override_product_suppression=True,
                     )
-                )
-                local = self.shared_inventory.local_quantity(sku)
+                except StockSyncError as exc:
+                    log.exception("Partial /set synchronization for %s", sku)
+                    sync_error = str(exc)
                 await self.tg.send_message(
                     chat_id,
-                    (
-                        f"✅ {sku}\n"
-                        f"Доступно для заказа: {available} шт.\n"
-                        f"Мой склад: {local} шт. (не изменён)\n"
-                        "WB FBS и Ozon FBS синхронизированы."
-                    ),
+                    self._format_set_result(sku, sync_error),
                 )
             elif command == "/set_main":
                 if len(args) < 2:
@@ -715,6 +715,34 @@ class StockMonitorService:
         except Exception as exc:
             log.exception("Command failed: %s", command)
             await self.tg.send_message(chat_id, f"⚠️ Не удалось выполнить команду: {exc}")
+
+    def _format_set_result(self, sku: str, sync_error: str | None = None) -> str:
+        inventory = self.shared_inventory
+        available = inventory.available_quantity(sku)
+        lines = [
+            f"{'⚠️' if sync_error else '✅'} {sku}",
+            f"Доступно для заказа: {available} шт.",
+            f"Мой склад: {inventory.local_quantity(sku)} шт. (не изменён)",
+        ]
+        product = inventory._wb_by_sku().get(sku)
+        statuses = []
+        if product is not None:
+            statuses.append(("wb", "WB FBS", inventory.wb_service.fbs_stock.get(product.nm_id, 0)))
+        if inventory.ozon is not None and sku in inventory.db.get_channel_catalog("ozon"):
+            statuses.append(("ozon", "Ozon FBS", inventory.db.get_channel_stock("ozon_fbs", (sku,)).get(sku, 0)))
+        for channel, label, current in statuses:
+            if inventory.channel_fbs.paused(channel, sku):
+                lines.append(f"{label}: {current} шт. — массовая пауза сохранена, целевой остаток 0.")
+            elif inventory.db.get_channel_suppression_reason(channel, sku) == "marketplace_stock":
+                lines.append(f"{label}: {current} шт. — отключён для этого товара.")
+            else:
+                suffix = " — ожидает синхронизации." if current != available else ""
+                lines.append(f"{label}: {current} шт.{suffix}")
+        if sync_error:
+            lines.extend(["Лимит сохранён. Незавершённые записи будут повторены автоматически.", sync_error])
+        elif statuses and all(inventory.channel_fbs.paused(channel, sku) for channel, _, _ in statuses):
+            lines.append("Все доступные площадки на паузе; товар не выставлен в продажу.")
+        return "\n".join(lines)
 
     def _stock_page_meta(self, page: int) -> tuple[list[Product], int, int, int]:
         rows = list(self.products.values())

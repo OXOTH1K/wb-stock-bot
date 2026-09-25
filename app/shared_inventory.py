@@ -17,6 +17,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+class StockSyncError(RuntimeError):
+    """Desired inventory was saved, but some marketplace writes failed."""
+
+
 class SharedInventoryService:
     """Manage physical local stock and the shared order-available pool."""
 
@@ -430,6 +434,7 @@ class SharedInventoryService:
         reason: str = "manual",
         *,
         force: bool = False,
+        override_product_suppression: bool = False,
     ) -> int:
         """Set sellable limit without changing full physical stock."""
         async with self._lock:
@@ -438,9 +443,19 @@ class SharedInventoryService:
             )
             self.channel_fbs.explicit_set(sku)
             self._clear_wb_decisions(sku)
-            # An explicit available-stock edit supersedes only mass-zero
-            # restoration. Platform-specific marketplace_stock suppression
-            # must remain in place until that marketplace warehouse is empty.
+            if override_product_suppression:
+                for channel in ("wb", "ozon"):
+                    if self.channel_fbs.paused(channel, sku):
+                        continue
+                    if self.db.get_channel_suppression_reason(channel, sku) == "marketplace_stock":
+                        self.db.clear_channel_suppressed(channel, sku)
+                        if channel == "wb":
+                            product = self._wb_by_sku().get(sku)
+                            if product is not None:
+                                self.db.clear_saved_product_fbs("wb_auto", product.nm_id)
+            # Clear legacy shared-zero restoration. Product-specific suppression
+            # is preserved unless the caller explicitly overrides it above;
+            # independent channel pauses always remain in place.
             self.db.clear_available_snapshot("mass_shared", sku)
             for channel in ("wb", "ozon"):
                 if (
@@ -575,7 +590,7 @@ class SharedInventoryService:
                 + " | ".join(errors)
             )
             if raise_errors:
-                raise RuntimeError(message)
+                raise StockSyncError(message)
             log.error(message)
 
     async def suppress_channel(
