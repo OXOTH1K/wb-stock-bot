@@ -112,8 +112,8 @@ class StockMonitorService:
                 f"С нулём на WB FBS: {zeros_fbs}\n"
                 f"С нулём на FBW: {wb_zero_text}\n\n"
                 "Команды: /stocks_wb, /stocks_ozon, /zero, /status, "
-                "/fbs_zero_all, /fbs_restore, /ozon_fbs_zero_all, "
-                "/ozon_fbs_restore"
+                "/set_fbs_wb_zero, /restore_fbs_wb, /set_fbs_ozon_zero, "
+                "/restore_fbs_ozon"
                 f"{wb_startup_note}"
             ),
         )
@@ -283,6 +283,10 @@ class StockMonitorService:
                 self.db.delete_pending_alert(alert_key)
                 return
             sku = product.vendor_code or f"WB-{nm_id}"
+            control = getattr(shared_inventory, "channel_fbs", None)
+            if control is not None and control.paused("wb", sku):
+                self.db.delete_pending_alert(alert_key)
+                return
             if (
                 shared_inventory is not None
                 and sku in self.db.get_available_snapshot("mass_shared")
@@ -477,12 +481,10 @@ class StockMonitorService:
             "/zero — показать товары WB с нулём на FBS или FBW\n"
             "/set <артикул> <количество> — задать «Доступно для заказа»\n"
             "/set_main <артикул> +N|-N — добавить или списать товар на «Моём складе»\n"
-            "/fbs_zero_all — сохранить и обнулить «Доступно» на WB FBS и Ozon FBS\n"
-            "/fbs_restore — восстановить «Доступно» после массового обнуления\n"
-            "/ozon_fbs_zero_all — то же массовое обнуление WB FBS и Ozon FBS\n"
-            "/ozon_fbs_restore — восстановить «Доступно» после массового обнуления\n"
-            "/fbs_zero_all_ozon — другое название /ozon_fbs_zero_all\n"
-            "/fbs_restore_ozon — другое название /ozon_fbs_restore\n\n"
+            "/set_fbs_ozon_zero — сохранить и обнулить только Ozon FBS\n"
+            "/restore_fbs_ozon — восстановить сохранённые остатки Ozon FBS\n"
+            "/set_fbs_wb_zero — сохранить и обнулить только WB FBS\n"
+            "/restore_fbs_wb — восстановить сохранённые остатки WB FBS\n\n"
             "[страница] — необязательно, например /stocks_wb 2.\n"
             "Вместо <артикул> и <количество> укажите свои значения без скобок.\n"
             "Пример: /set keychain-goat 5 или /set_main keychain-goat +10.\n"
@@ -686,43 +688,23 @@ class StockMonitorService:
                     chat_id,
                     "\n".join(lines),
                 )
-            elif command == "/fbs_zero_all":
+            elif command in {"/set_fbs_wb_zero", "/restore_fbs_wb"}:
+                if self.shared_inventory is None:
+                    raise RuntimeError("Общий склад не инициализирован")
+                restore = command == "/restore_fbs_wb"
+                if restore and not self.shared_inventory.channel_fbs.pending_snapshot("wb"):
+                    await self.tg.send_message(chat_id, "ℹ️ Сохранённых остатков WB FBS для восстановления нет.")
+                    return
+                action = "restore" if restore else "zero"
                 await self.tg.send_message(
                     chat_id,
-                    "⚠️ Обнулить «Доступно для заказа» у ВСЕХ товаров?\n"
-                    "«Мой склад» не изменится, WB FBS / Ozon FBS станут 0.",
-                    reply_markup={
-                        "inline_keyboard": [[
-                            {"text": "Обнулить весь FBS", "callback_data": "fbsallzero:yes"},
-                            {"text": "Отмена", "callback_data": "fbsallzero:skip"},
-                        ]]
-                    },
+                    "♻️ Восстановить сохранённые остатки только WB FBS с учётом продаж?"
+                    if restore else "⚠️ Сохранить текущие остатки и обнулить только WB FBS?",
+                    reply_markup={"inline_keyboard": [[
+                        {"text": "Восстановить WB FBS" if restore else "Обнулить WB FBS", "callback_data": f"channelwb:{action}:yes"},
+                        {"text": "Отмена", "callback_data": f"channelwb:{action}:skip"},
+                    ]]},
                 )
-            elif command == "/fbs_restore":
-                saved = self.db.get_available_snapshot(
-                    "mass_shared"
-                )
-                saved_total = sum(saved.values())
-                if not saved:
-                    await self.tg.send_message(
-                        chat_id,
-                        "ℹ️ Сохранённого массового значения «Доступно для заказа» нет.",
-                    )
-                else:
-                    await self.tg.send_message(
-                        chat_id,
-                        (
-                            f"♻️ Восстановить «Доступно для заказа»: "
-                            f"{len(saved)} товаров, суммарно {saved_total} шт.?\n"
-                            "«Мой склад» не изменится; значение будет опубликовано в WB FBS / Ozon FBS."
-                        ),
-                        reply_markup={
-                            "inline_keyboard": [[
-                                {"text": "Восстановить", "callback_data": "fbsallrestore:yes"},
-                                {"text": "Отмена", "callback_data": "fbsallrestore:skip"},
-                            ]]
-                        },
-                    )
             elif command == "/status":
                 await self.tg.send_message(chat_id, self._format_status())
             else:
@@ -1409,30 +1391,27 @@ class StockMonitorService:
         }:
             return
 
-        if data.startswith("fbsallzero:"):
-            try:
-                if data.endswith(":skip"):
-                    await self._finish_action_message(
-                        chat_id, message_id, message_text, "⏭ Массовое обнуление отменено."
-                    )
-                elif data.endswith(":yes"):
-                    await self._zero_all_fbs(chat_id, message_id, message_text)
-            except Exception as exc:
-                log.exception("Mass FBS zero failed")
-                await self.tg.send_message(chat_id, f"⚠️ Не удалось обнулить весь FBS: {exc}")
+        if data.startswith(("fbsallzero:", "fbsallrestore:")):
+            await self._finish_action_message(chat_id, message_id, message_text,
+                "Эта кнопка устарела. Используйте /set_fbs_wb_zero или /restore_fbs_wb.")
             return
-
-        if data.startswith("fbsallrestore:"):
+        if data.startswith("channelwb:"):
             try:
                 if data.endswith(":skip"):
-                    await self._finish_action_message(
-                        chat_id, message_id, message_text, "⏭ Восстановление FBS отменено."
-                    )
-                elif data.endswith(":yes"):
-                    await self._restore_all_fbs(chat_id, message_id, message_text)
+                    result = "⏭ Операция отменена."
+                elif data in {"channelwb:zero:yes", "channelwb:restore:yes"}:
+                    if self.shared_inventory is None:
+                        raise RuntimeError("Общий склад не инициализирован")
+                    restore = data == "channelwb:restore:yes"
+                    method = self.shared_inventory.restore_fbs_channel if restore else self.shared_inventory.zero_fbs_channel
+                    count, total = await method("wb")
+                    result = ("✅ WB FBS восстановлен" if restore else "✅ WB FBS обнулён") + f". Товаров: {count}, " + ("восстановлено" if restore else "сохранено") + f": {total} шт."
+                else:
+                    return
+                await self._finish_action_message(chat_id, message_id, message_text, result)
             except Exception as exc:
-                log.exception("Mass FBS restore failed")
-                await self.tg.send_message(chat_id, f"⚠️ Не удалось восстановить FBS: {exc}")
+                log.exception("WB channel stock operation failed")
+                await self.tg.send_message(chat_id, f"⚠️ Операция WB FBS не завершена: {exc}")
             return
 
         if data.startswith("stocksmain:"):
