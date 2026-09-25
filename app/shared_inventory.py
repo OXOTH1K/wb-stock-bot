@@ -417,7 +417,7 @@ class SharedInventoryService:
         quantity: int,
         reason: str = "manual",
         *,
-        force: bool = True,
+        force: bool = False,
     ) -> int:
         """Set sellable limit without changing full physical stock."""
         async with self._lock:
@@ -455,14 +455,14 @@ class SharedInventoryService:
             return
         if self.wb_service.warehouse is None:
             raise RuntimeError("WB seller warehouse is not initialized")
-        if len(product.chrt_ids) != 1:
+        if not product.chrt_ids or (quantity != 0 and len(product.chrt_ids) != 1):
             raise RuntimeError(
                 f"WB SKU {sku} has multiple variants; "
                 "shared stock cannot choose a chrtId safely"
             )
         await self.wb_service.wb.set_fbs_stocks(
             self.wb_service.warehouse.id,
-            {product.chrt_ids[0]: int(quantity)},
+            {chrt_id: int(quantity) for chrt_id in product.chrt_ids},
         )
         self.wb_service.fbs_stock[product.nm_id] = int(quantity)
         self.db.update_many(
@@ -618,9 +618,26 @@ class SharedInventoryService:
             )
             total += current
             count += 1
-        for sku in skus:
-            await self.sync_sku(
-                sku, raise_errors=True, force=True
+        # Repeat commands must include earlier unfinished writes without
+        # overwriting their original restoration snapshots.
+        snapshot = self.db.get_available_snapshot(scope)
+        for sku in snapshot:
+            if self.available_quantity(sku) != 0:
+                self.db.set_order_available(sku, 0, reason=f"{scope}_zero_retry")
+        targets = set(skus) | set(snapshot) | {
+            sku for sku in self.all_skus() if self.available_quantity(sku) == 0
+        }
+        errors = []
+        for sku in sorted(targets):
+            try:
+                await self.sync_sku(sku, raise_errors=True)
+            except Exception as exc:
+                errors.append(f"{sku}: {exc}")
+        if errors:
+            raise RuntimeError(
+                "Доступный остаток сохранён в 0. Не завершена синхронизация: "
+                + " | ".join(errors)
+                + ". Фоновая проверка повторит запись автоматически."
             )
         return count, total
 
@@ -652,13 +669,12 @@ class SharedInventoryService:
                 sku
                 for sku in sorted(self.all_skus())
                 if self.available_quantity(sku) > 0
-                and not self.db.is_channel_suppressed("wb", sku)
-                and not self.db.is_channel_suppressed("ozon", sku)
             ]
             for sku in skus:
-                self.db.set_channel_suppressed(
-                    "wb", sku, "mass"
-                )
+                if not self.db.is_channel_suppressed("wb", sku):
+                    self.db.set_channel_suppressed(
+                        "wb", sku, "mass"
+                    )
             return await self._suppress_mass(
                 "mass_shared", skus
             )
@@ -686,13 +702,12 @@ class SharedInventoryService:
                 sku
                 for sku in sorted(self.all_skus())
                 if self.available_quantity(sku) > 0
-                and not self.db.is_channel_suppressed("wb", sku)
-                and not self.db.is_channel_suppressed("ozon", sku)
             ]
             for sku in skus:
-                self.db.set_channel_suppressed(
-                    "ozon", sku, "mass"
-                )
+                if not self.db.is_channel_suppressed("ozon", sku):
+                    self.db.set_channel_suppressed(
+                        "ozon", sku, "mass"
+                    )
             return await self._suppress_mass(
                 "mass_shared", skus
             )

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, Mock
 
-from app.ozon_client import OzonAPIError, OzonClient
+from app.ozon_client import OzonAPIError, OzonClient, OzonStockRateLimitError
 
 
 class OzonClientResponseTests(unittest.IsolatedAsyncioTestCase):
@@ -44,3 +44,15 @@ class OzonClientResponseTests(unittest.IsolatedAsyncioTestCase):
             {"offer_id": "B", "updated": True, "errors": []},
         ]})
         await client.set_fbs_stocks(77, {"A": 2, "B": 3})
+
+    async def test_item_frequency_error_identifies_affected_sku(self):
+        client = OzonClient("client", "key")
+        client._json = AsyncMock(return_value={"result": [
+            {"offer_id": "A", "updated": True},
+            {"offer_id": "B", "updated": False, "errors": [
+                {"message": "Stock is updated too frequently"}
+            ]},
+        ]})
+        with self.assertRaises(OzonStockRateLimitError) as caught:
+            await client.set_fbs_stocks(77, {"A": 0, "B": 0})
+        self.assertEqual(caught.exception.skus, {"B"})
