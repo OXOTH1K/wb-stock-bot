@@ -461,33 +461,43 @@ class StockMonitorService:
             ),
         )
 
+    @staticmethod
+    def _format_help() -> str:
+        return (
+            "Доступные команды:\n\n"
+            "/help — показать эту справку\n"
+            "/start — начать работу, показать ID чата и справку\n"
+            "/id — показать ID чата и справку\n"
+            "/status — проверить заказы и остатки, показать ситуации, требующие решения\n"
+            "/stocks — показать команды просмотра складов\n"
+            "/stocks_wb [страница] — остатки WB FBS и FBW\n"
+            "/stocks_ozon [страница] — остатки Ozon FBS и FBO\n"
+            "/stocks_main [страница] — остатки «Моего склада»\n"
+            "/stock <артикул> — найти товар WB и показать его остатки\n"
+            "/zero — показать товары WB с нулём на FBS или FBW\n"
+            "/set <артикул> <количество> — задать «Доступно для заказа»\n"
+            "/set_main <артикул> +N|-N — добавить или списать товар на «Моём складе»\n"
+            "/fbs_zero_all — сохранить и обнулить «Доступно» на WB FBS и Ozon FBS\n"
+            "/fbs_restore — восстановить «Доступно» после массового обнуления\n"
+            "/ozon_fbs_zero_all — то же массовое обнуление WB FBS и Ozon FBS\n"
+            "/ozon_fbs_restore — восстановить «Доступно» после массового обнуления\n"
+            "/fbs_zero_all_ozon — другое название /ozon_fbs_zero_all\n"
+            "/fbs_restore_ozon — другое название /ozon_fbs_restore\n\n"
+            "[страница] — необязательно, например /stocks_wb 2.\n"
+            "Вместо <артикул> и <количество> укажите свои значения без скобок.\n"
+            "Пример: /set keychain-goat 5 или /set_main keychain-goat +10.\n"
+            "Команды Ozon доступны при подключённом магазине Ozon."
+        )
+
     async def handle_message(self, chat_id: int, text: str) -> None:
         command, *args = text.split()
         command = command.split("@", 1)[0].lower()
 
         if command in {"/start", "/id"}:
-            await self.tg.send_message(
-                chat_id,
-                (
-                    f"Ваш Telegram chat_id: {chat_id}\n\n"
-                    "После добавления этого ID в TELEGRAM_CHAT_IDS доступны команды:\n"
-                    "/stocks_wb — остатки WB FBS + FBW\n"
-                    "/stocks_wb 2 — открыть страницу WB\n"
-                    "/stocks_ozon — остатки Ozon FBS + FBO\n"
-                    "/stocks_ozon 2 — открыть страницу Ozon\n"
-                    "/stocks_main — остатки «Моего склада»\n"
-                    "/stocks_main 2 — открыть страницу «Моего склада»\n"
-                    "/stock <артикул продавца> — найти товар\n"
-                    "/set <артикул> <количество> — установить «Доступно для заказа»\n"
-                    "/set_main <артикул> +N|-N — изменить «Мой склад»\n"
-                    "/zero — товары с нулевым остатком\n"
-                    "/fbs_zero_all — сохранить и обнулить весь FBS\n"
-                    "/fbs_restore — восстановить WB FBS\n"
-                    "/ozon_fbs_zero_all — обнулить весь Ozon FBS\n"
-                    "/ozon_fbs_restore — восстановить Ozon FBS из локального склада\n"
-                    "/status — состояние сервиса"
-                ),
-            )
+            intro = f"Ваш Telegram chat_id: {chat_id}\n\n"
+            if chat_id not in self.settings.telegram_chat_ids:
+                intro += "Для доступа добавьте этот ID в TELEGRAM_CHAT_IDS.\n\n"
+            await self.tg.send_message(chat_id, intro + self._format_help())
             return
 
         if not self.settings.telegram_chat_ids:
@@ -501,7 +511,9 @@ class StockMonitorService:
             return
 
         try:
-            if command == "/stocks_wb":
+            if command == "/help":
+                await self.tg.send_message(chat_id, self._format_help())
+            elif command == "/stocks_wb":
                 page = 1
                 if args:
                     try:
@@ -716,14 +728,7 @@ class StockMonitorService:
             else:
                 await self.tg.send_message(
                     chat_id,
-                    (
-                        "Команды: /stocks_wb, /stocks_ozon, /stocks_main, "
-                        "/stock <артикул продавца>, /set <артикул> <количество>, "
-                        "/set_main <артикул> +N|-N, /zero, "
-                        "/fbs_zero_all, /fbs_restore, "
-                        "/ozon_fbs_zero_all, /ozon_fbs_restore, "
-                        "/status, /id"
-                    ),
+                    "Не удалось распознать команду.\n\n" + self._format_help(),
                 )
         except Exception as exc:
             log.exception("Command failed: %s", command)
