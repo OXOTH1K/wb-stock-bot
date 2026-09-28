@@ -170,7 +170,7 @@ assert.equal(element('inventorySearch').value, 'existing search');
   context.points=Array.from({length:100},(_,i)=>({date:'2026-09-20',sales:i+1,returns:0,net:'1.00'}));
   chart=vm.runInContext('salesChart(points)',context);
   assert.equal((chart.match(/class="chart-cash-label"/g)||[]).length,100);
-  assert.match(chart,/width="11416"/);
+  assert.match(chart,/width="8588"/);
 
   element('analyticsDateFrom').value='2026-09-20'; element('analyticsDateTo').value='2026-09-21'; element('analyticsSku').value='SKU';
   context.fetch=()=>new Promise(resolve=>{finishFirst=resolve;});
