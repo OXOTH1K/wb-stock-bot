@@ -70,6 +70,7 @@ INDEX_HTML = r"""<!doctype html>
   <header>
     <div><h1>CRM склада</h1><div class="sub">Остатки товаров · локальный склад · WB · OZON</div></div>
     <div class="header-actions"><span class="sub" id="crmUpdateStatus" aria-live="polite" hidden></span>
+      <button class="btn" id="crmCheckUpdatesButton" type="button">Проверить обновления</button>
       <button class="btn primary" id="crmUpdateButton" type="button" hidden>Установить новую версию</button>
       <button class="btn" id="refreshButton">Обновить экран</button>
     </div>
@@ -405,11 +406,14 @@ async function loadInventory() {
     renderInventory();
   } catch (e) { setError('inventoryBody', e); }
 }
-async function checkCRMUpdate() {
+async function checkCRMUpdate(force=false) {
   const button=document.getElementById('crmUpdateButton');
+  const checkButton=document.getElementById('crmCheckUpdatesButton');
   const status=document.getElementById('crmUpdateStatus');
+  checkButton.disabled=true;
+  if(force) {status.hidden=false; status.textContent='Проверяю GitHub…';}
   try {
-    const update=await api('/api/update');
+    const update=await api('/api/update'+(force?'?force=1':''));
     button.hidden=!update.available;
     if(update.available) {
       button.dataset.tag=update.version;
@@ -418,9 +422,11 @@ async function checkCRMUpdate() {
       status.hidden=false;
     } else {
       button.dataset.tag='';
-      status.hidden=true;
+      status.textContent=update.message || 'Обновлений нет.';
+      status.hidden=!force;
     }
-  } catch(e) {button.hidden=true; status.hidden=true;}
+  } catch(e) {button.hidden=true; if(force){status.textContent=e.message;status.hidden=false;} else status.hidden=true;}
+  finally {checkButton.disabled=false;}
 }
 async function installCRMUpdate() {
   const button=document.getElementById('crmUpdateButton');
@@ -484,6 +490,7 @@ async function setAvailable(sku, key) {
 
 document.getElementById('refreshButton').addEventListener('click', refreshView);
 document.getElementById('crmUpdateButton').addEventListener('click', installCRMUpdate);
+document.getElementById('crmCheckUpdatesButton').addEventListener('click', () => checkCRMUpdate(true));
 for (const view of ['inventory','lookup','fbw','analytics']) document.getElementById(view+'Tab').addEventListener('click', () => showView(view));
 document.getElementById('inventoryBody').addEventListener('click', event => {
   const button = event.target.closest('button[data-stock-action]');

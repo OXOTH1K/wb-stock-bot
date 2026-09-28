@@ -25,6 +25,15 @@ class FakeService:
         self.warehouse = SimpleNamespace(name="Main FBS")
 
 
+class FakeReleaseChecker:
+    def __init__(self):
+        self.forced = []
+
+    async def check(self, force=False):
+        self.forced.append(force)
+        return {"available": False, "message": "Проверка завершена."}
+
+
 class CRMTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -68,6 +77,16 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_sku["SKU-B"]["drift_channels"], [])
         self.assertIsNone(by_sku["SKU-A"]["ozon_fbs"])
         self.assertIsNone(by_sku["SKU-A"]["ozon_fbo"])
+
+    async def test_update_check_can_bypass_release_cache_on_user_request(self):
+        checker = FakeReleaseChecker()
+        self.crm.release_checker = checker
+
+        response = await self.client.get("/api/update?force=1")
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(checker.forced, [True])
 
     async def test_inventory_unions_wb_and_ozon_by_seller_sku(self):
         self.db.replace_channel_catalog(

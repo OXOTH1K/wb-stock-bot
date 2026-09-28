@@ -214,13 +214,16 @@ assert.equal(element('inventorySearch').value, 'existing search');
   context.fetch = async (url, options) => {
     updateRequests.push({url,options});
     return {ok:true,text:async()=>JSON.stringify(
-      url === '/api/update' && !options?.method
+      url.startsWith('/api/update') && !options?.method
         ? {available:true,version:'v1.2.3',current:'1234567'}
         : {message:'Обновление запущено.'})};
   };
   await vm.runInContext('checkCRMUpdate()', context);
   assert.equal(element('crmUpdateButton').hidden, false);
   assert.equal(element('crmUpdateButton').dataset.tag, 'v1.2.3');
+  await vm.runInContext('checkCRMUpdate(true)', context);
+  assert.equal(updateRequests.at(-1).url, '/api/update?force=1');
+  assert.equal(element('crmCheckUpdatesButton').disabled, false);
   await vm.runInContext('installCRMUpdate()', context);
   assert.equal(element('crmUpdateButton').hidden, true);
   assert.equal(updateRequests.at(-1).url, '/api/update');

@@ -159,7 +159,9 @@ class CRMServer:
     async def update_status(self, request: web.Request) -> web.Response:
         if self.release_checker is None:
             return web.json_response({'available': False, 'message': 'Проверка обновлений не подключена.'})
-        return web.json_response(await self.release_checker.check())
+        force = request.query.get('force') == '1'
+        return web.json_response(await self.release_checker.check(force=force),
+                                 headers={'Cache-Control': 'no-store'})
 
     async def start_update(self, request: web.Request) -> web.Response:
         if self.release_checker is None:
