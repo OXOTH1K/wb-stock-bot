@@ -16,6 +16,7 @@ REPOSITORY = 'OXOTH1K/wb-stock-bot'
 API = f'https://api.github.com/repos/{REPOSITORY}'
 UPDATE_SERVICE = 'wb-stock-bot-crm-update.service'
 CHECK_INTERVAL = 6 * 60 * 60
+TRIGGER_CHECK_FRESHNESS = 30
 TAG_RE = re.compile(r'^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$')
 SERVER_CONFIG_PATHS = {
     '.env.example', 'app/config.py', 'app/deployment.py', 'deploy.sh',
@@ -122,11 +123,17 @@ class CRMReleaseChecker:
 
     async def trigger(self, tag):
         log.info('CRM update requested for %s', tag)
-        try:
-            status = await asyncio.wait_for(self.check(force=True), timeout=12)
-        except asyncio.TimeoutError:
-            log.warning('Timed out rechecking GitHub before CRM update')
-            return False, 'Проверка GitHub не ответила за 12 секунд. Попробуйте ещё раз.'
+        if self.checked_at and time.monotonic() - self.checked_at <= TRIGGER_CHECK_FRESHNESS:
+            # The UI just checked the release against GitHub. Reuse that verified
+            # result instead of making a second set of API calls on the click.
+            status = dict(self.info)
+            log.info('Using the recent GitHub release check for CRM update')
+        else:
+            try:
+                status = await asyncio.wait_for(self.check(force=True), timeout=12)
+            except asyncio.TimeoutError:
+                log.warning('Timed out rechecking GitHub before CRM update')
+                return False, 'Проверка GitHub не ответила за 12 секунд. Попробуйте ещё раз.'
         if not status['available']:
             reason = status.get('message') or 'Автоматическое обновление релиза недоступно.'
             log.info('CRM update %s rejected by fresh release check: %s', tag, reason)

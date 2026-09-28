@@ -68,6 +68,17 @@ class ReleaseCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.await_args.args, ('/usr/bin/sudo', '-n', '/usr/bin/systemctl',
                                                'start', '--no-block', 'wb-stock-bot-crm-update.service'))
 
+    async def test_trigger_reuses_a_recently_verified_release(self):
+        checker = self.checker()
+        await checker.check(force=True)
+        process = AsyncMock()
+        process.communicate.return_value = (b'', b'')
+        process.returncode = 0
+        with patch.object(checker, 'check', new=AsyncMock(side_effect=AssertionError('unexpected recheck'))), \
+             patch('app.crm_updates.asyncio.create_subprocess_exec', new=AsyncMock(return_value=process)):
+            started, _ = await checker.trigger('v1.2.3')
+        self.assertTrue(started)
+
     async def test_trigger_rejects_unavailable_tag_without_running_commands(self):
         checker = self.checker(body='manual only')
         with patch('app.crm_updates.asyncio.create_subprocess_exec', new=AsyncMock()) as run:
