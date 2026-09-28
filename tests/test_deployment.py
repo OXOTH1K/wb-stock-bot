@@ -68,6 +68,16 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'CRM_USER'):
                 Settings.from_env()
 
+    def test_crm_updater_uses_a_path_request_without_sudo_or_disabling_nnp(self):
+        deploy = (Path(__file__).resolve().parents[1] / 'deploy.sh').read_text()
+        security_dropin = (Path(__file__).resolve().parents[1] / 'app/deployment.py').read_text()
+        self.assertIn('NoNewPrivileges=true', security_dropin)
+        self.assertIn('PathExists=$APP_DIR/data/crm-update.request', deploy)
+        self.assertIn('ExecStartPre=/usr/bin/rm -f -- $APP_DIR/data/crm-update.request', deploy)
+        self.assertIn('systemctl enable --now wb-stock-bot-crm-update.path', deploy)
+        self.assertIn('rm -f "$UPDATE_SUDOERS"', deploy)
+        self.assertNotIn('NOPASSWD:', deploy)
+
     def test_custom_https_port_is_preserved_on_redeployment(self):
         prepare(self.root, 'crm.example.ru', self.stage, 4443)
         values = dotenv_values(self.stage / '.env', interpolate=False)

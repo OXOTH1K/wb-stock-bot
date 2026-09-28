@@ -55,6 +55,7 @@ CADDY_ENV=/etc/caddy/wb-crm-selectel.env
 CADDY_DNS_CHANGED=0
 UPDATE_HELPER=/usr/local/lib/wb-stock-bot/crm-update-deploy.sh
 UPDATE_UNIT=/etc/systemd/system/wb-stock-bot-crm-update.service
+UPDATE_PATH_UNIT=/etc/systemd/system/wb-stock-bot-crm-update.path
 UPDATE_SUDOERS=/etc/sudoers.d/wb-stock-bot-crm-update
 DROPIN="/etc/systemd/system/$SERVICE.service.d/crm-security.conf"
 APP_CHANGED=0
@@ -108,10 +109,15 @@ cleanup() {
       systemctl stop caddy || true
     fi
     if [[ $UPDATE_CONFIG_CHANGED == 1 ]]; then
+      systemctl disable --now wb-stock-bot-crm-update.path >/dev/null 2>&1 || true
       restore_file "$UPDATE_HELPER" update-helper.old
       restore_file "$UPDATE_UNIT" update-unit.old
+      restore_file "$UPDATE_PATH_UNIT" update-path.old
       restore_file "$UPDATE_SUDOERS" update-sudoers.old
       systemctl daemon-reload || true
+      if [[ -f "$STAGE/update-path.old" ]]; then
+        systemctl enable --now wb-stock-bot-crm-update.path || true
+      fi
     fi
     echo 'Python package upgrades and an installed Caddy package are retained; application data is not rolled back.' >&2
   fi
@@ -229,18 +235,23 @@ if [[ $HEALTH_OK != 1 ]]; then
 fi
 systemctl is-active --quiet "$SERVICE"
 
-# Keep the privileged runner outside the app tree and grant the service user
-# permission to start only this fixed systemd unit, never an arbitrary command.
-if [[ ! -x /usr/bin/systemctl ]] || ! command -v visudo >/dev/null; then
-  echo '/usr/bin/systemctl and visudo are required to configure CRM updates.' >&2
+# Keep the privileged runner outside the app tree. The app requests an update
+# by creating a marker in data; a root-owned systemd path unit starts this fixed service.
+if [[ ! -x /usr/bin/systemctl ]]; then
+  echo '/usr/bin/systemctl is required to configure CRM updates.' >&2
   exit 1
 fi
-SYSTEMCTL_BIN=/usr/bin/systemctl
 backup_file "$UPDATE_HELPER" update-helper.old
 backup_file "$UPDATE_UNIT" update-unit.old
+backup_file "$UPDATE_PATH_UNIT" update-path.old
 backup_file "$UPDATE_SUDOERS" update-sudoers.old
 UPDATE_CONFIG_CHANGED=1
 install -d -o root -g root -m 0755 "$(dirname "$UPDATE_HELPER")"
+if [[ -L "$APP_DIR/data" ]]; then
+  echo 'Refusing symlinked data directory for CRM update requests.' >&2
+  exit 1
+fi
+install -d -o "$APP_USER" -g "$APP_GROUP" -m 0700 "$APP_DIR/data"
 install -o root -g root -m 0755 "$APP_DIR/deploy.sh" "$STAGE/crm-update-deploy.sh"
 mv -f "$STAGE/crm-update-deploy.sh" "$UPDATE_HELPER"
 cat > "$STAGE/crm-update.service" <<EOF
@@ -255,16 +266,27 @@ User=root
 Environment=APP_DIR=$APP_DIR
 Environment=APP_USER=$APP_USER
 Environment=SERVICE=$SERVICE
+ExecStartPre=/usr/bin/rm -f -- $APP_DIR/data/crm-update.request
 ExecStart=$UPDATE_HELPER
 TimeoutStartSec=30min
 PrivateTmp=true
 EOF
 install -o root -g root -m 0644 "$STAGE/crm-update.service" "$UPDATE_UNIT"
-printf '%s ALL=(root) NOPASSWD: %s start --no-block wb-stock-bot-crm-update.service\n' \
-  "$APP_USER" "$SYSTEMCTL_BIN" > "$STAGE/crm-update.sudoers"
-visudo -cf "$STAGE/crm-update.sudoers"
-install -o root -g root -m 0440 "$STAGE/crm-update.sudoers" "$UPDATE_SUDOERS"
+cat > "$STAGE/crm-update.path" <<EOF
+[Unit]
+Description=Watch for an authenticated CRM update request
+
+[Path]
+PathExists=$APP_DIR/data/crm-update.request
+Unit=wb-stock-bot-crm-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+install -o root -g root -m 0644 "$STAGE/crm-update.path" "$UPDATE_PATH_UNIT"
+rm -f "$UPDATE_SUDOERS"
 systemctl daemon-reload
+systemctl enable --now wb-stock-bot-crm-update.path
 if [[ $SETUP_CADDY == 1 ]]; then
   systemctl enable caddy
   if [[ $CADDY_DNS_CHANGED == 1 ]]; then

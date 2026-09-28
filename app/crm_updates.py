@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import subprocess
 import time
@@ -15,6 +16,7 @@ log = logging.getLogger(__name__)
 REPOSITORY = 'OXOTH1K/wb-stock-bot'
 API = f'https://api.github.com/repos/{REPOSITORY}'
 UPDATE_SERVICE = 'wb-stock-bot-crm-update.service'
+UPDATE_REQUEST = 'crm-update.request'
 CHECK_INTERVAL = 6 * 60 * 60
 TRIGGER_CHECK_FRESHNESS = 30
 TAG_RE = re.compile(r'^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$')
@@ -29,6 +31,7 @@ class CRMReleaseChecker:
     def __init__(self, repository: Path | None = None, current_sha: str | None = None,
                  fetch_json=None, check_interval: int = CHECK_INTERVAL):
         self.repository = repository or Path(__file__).resolve().parents[1]
+        self.update_request = self.repository / 'data' / UPDATE_REQUEST
         self.current_sha = current_sha or self._current_revision()
         self.fetch_json = fetch_json
         self.check_interval = check_interval
@@ -141,19 +144,16 @@ class CRMReleaseChecker:
         if tag != status['version']:
             log.info('CRM update tag mismatch: requested %s, validated %s', tag, status['version'])
             return False, 'Для этого релиза автоматическое обновление недоступно.'
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        if hasattr(os, 'O_NOFOLLOW'):
+            flags |= os.O_NOFOLLOW
         try:
-            process = await asyncio.wait_for(asyncio.create_subprocess_exec(
-                '/usr/bin/sudo', '-n', '/usr/bin/systemctl', 'start', '--no-block',
-                UPDATE_SERVICE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE), timeout=5)
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
-        except (OSError, asyncio.TimeoutError) as exc:
-            log.warning('Could not start CRM update systemd unit (%s)', type(exc).__name__)
-            return False, 'Служба автоматического обновления не настроена.'
-        if process.returncode:
-            detail = (stderr or stdout).decode('utf-8', errors='replace').strip()
-            log.error('systemctl rejected CRM update start (exit status %s): %s',
-                      process.returncode, detail[:500] or 'no command output')
-            return False, detail[:300] or 'Не удалось запустить обновление. Проверьте sudoers и systemd.'
-        log.info('CRM update systemd unit accepted release %s', tag)
-        return True, 'Обновление запущено. CRM перезапустится после установки.'
+            descriptor = os.open(self.update_request, flags, 0o600)
+            os.close(descriptor)
+        except FileExistsError:
+            log.info('CRM update request already queued for %s', tag)
+        except OSError as exc:
+            log.error('Could not queue CRM update request (%s)', type(exc).__name__)
+            return False, 'Не удалось передать запрос службе обновления. Проверьте доступ к каталогу data.'
+        log.info('Queued CRM update request for release %s', tag)
+        return True, 'Запрос на обновление передан. CRM перезапустится после установки.'

@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -57,34 +58,32 @@ class ReleaseCheckTests(unittest.IsolatedAsyncioTestCase):
                                     comparison_status='identical').check(force=True)
         self.assertFalse(status['available'])
 
-    async def test_trigger_rechecks_and_uses_only_fixed_systemd_unit(self):
+    async def test_trigger_queues_fixed_request_file_after_validating_release(self):
         checker = self.checker()
-        process = AsyncMock()
-        process.communicate.return_value = (b'', b'')
-        process.returncode = 0
-        with patch('app.crm_updates.asyncio.create_subprocess_exec', new=AsyncMock(return_value=process)) as run:
+        with patch('app.crm_updates.os.open', return_value=42) as open_file, \
+             patch('app.crm_updates.os.close') as close_file:
             started, _ = await checker.trigger('v1.2.3')
         self.assertTrue(started)
-        self.assertEqual(run.await_args.args, ('/usr/bin/sudo', '-n', '/usr/bin/systemctl',
-                                               'start', '--no-block', 'wb-stock-bot-crm-update.service'))
+        self.assertEqual(open_file.call_args.args[0], checker.update_request)
+        self.assertEqual(open_file.call_args.args[2], 0o600)
+        self.assertTrue(open_file.call_args.args[1] & os.O_EXCL)
+        close_file.assert_called_once_with(42)
 
     async def test_trigger_reuses_a_recently_verified_release(self):
         checker = self.checker()
         await checker.check(force=True)
-        process = AsyncMock()
-        process.communicate.return_value = (b'', b'')
-        process.returncode = 0
         with patch.object(checker, 'check', new=AsyncMock(side_effect=AssertionError('unexpected recheck'))), \
-             patch('app.crm_updates.asyncio.create_subprocess_exec', new=AsyncMock(return_value=process)):
+             patch('app.crm_updates.os.open', return_value=42), \
+             patch('app.crm_updates.os.close'):
             started, _ = await checker.trigger('v1.2.3')
         self.assertTrue(started)
 
     async def test_trigger_rejects_unavailable_tag_without_running_commands(self):
         checker = self.checker(body='manual only')
-        with patch('app.crm_updates.asyncio.create_subprocess_exec', new=AsyncMock()) as run:
+        with patch('app.crm_updates.os.open') as open_file:
             started, _ = await checker.trigger('v9.9.9')
         self.assertFalse(started)
-        run.assert_not_awaited()
+        open_file.assert_not_called()
 
     async def test_trigger_returns_fresh_release_check_reason(self):
         checker = self.checker(body='manual only')
@@ -92,13 +91,16 @@ class ReleaseCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(started)
         self.assertIn('ручной проверки', message)
 
-    async def test_trigger_reports_sudo_error_from_systemctl(self):
+    async def test_trigger_reports_request_directory_error(self):
         checker = self.checker()
-        process = AsyncMock()
-        process.communicate.return_value = (b'', b'sudo: a password is required')
-        process.returncode = 1
-        with patch('app.crm_updates.asyncio.create_subprocess_exec',
-                   new=AsyncMock(return_value=process)):
+        with patch('app.crm_updates.os.open', side_effect=PermissionError):
             started, message = await checker.trigger('v1.2.3')
         self.assertFalse(started)
-        self.assertIn('password is required', message)
+        self.assertIn('каталогу data', message)
+
+    async def test_trigger_is_idempotent_when_request_is_already_queued(self):
+        checker = self.checker()
+        with patch('app.crm_updates.os.open', side_effect=FileExistsError):
+            started, message = await checker.trigger('v1.2.3')
+        self.assertTrue(started)
+        self.assertIn('передан', message)
