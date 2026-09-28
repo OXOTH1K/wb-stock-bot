@@ -99,6 +99,16 @@ class FinanceLoadingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data['points'], [])
         self.assertEqual(self.service.queue.qsize(), 1)
 
+    async def test_old_analytics_cache_is_refreshed_after_return_count_fix(self):
+        self.db.conn.execute('INSERT INTO crm_finance_cache VALUES (?, ?, ?)',
+            ('2026-09-20:2026-09-22', 2_000_000_000,
+             json.dumps({'SKU': {'sku': 'SKU', 'title': 'Product', 'days': {}}})))
+        self.db.conn.commit()
+        data = self.service.view('2026-09-20','2026-09-22','SKU')
+        self.assertFalse(data['ready'])
+        self.assertEqual(data['points'], [])
+        self.assertEqual(self.service.queue.qsize(), 1)
+
     async def test_failed_refresh_preserves_previous_snapshot(self):
         self.wb._json.side_effect = [[row()], None]
         with patch('app.wb_sales_analytics.asyncio.sleep', new_callable=AsyncMock):
