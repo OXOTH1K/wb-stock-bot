@@ -111,5 +111,23 @@ assert.equal(element('inventorySearch').value, 'existing search');
   finishFirst({ok:true,text:async()=>JSON.stringify(fbwEmpty)});
   await oldPeriod;
   assert.match(element('fbwBody').innerHTML, /Период: 2026-09-21/);
+  // A malicious seller article must remain inert HTML data, never executable JS.
+  element('inventorySearch').value = '';
+  context.badSku = "x');alert(1);//\"><img src=x onerror=alert(1)>";
+  vm.runInContext("inventoryRows = [{sku:badSku,title:'Test',key:'p0',local:1,available:1,drift_channels:[]}]; renderInventory()", context);
+  assert.ok(!element('inventoryBody').innerHTML.includes('onclick='));
+  assert.ok(!element('inventoryBody').innerHTML.includes('<img'));
+  assert.match(element('inventoryBody').innerHTML, /data-stock-action="local"/);
+  assert.match(element('inventoryBody').innerHTML, /&lt;img/);
+  // Authenticated bootstrap supplies CSRF for all write requests.
+  const writes = [];
+  context.fetch = async (url, options) => {
+    writes.push({url,options});
+    return {ok:true,text:async()=>JSON.stringify(url === '/api/session' ? {csrf_token:'test-csrf'} : {ok:true})};
+  };
+  await vm.runInContext("api('/api/inventory/set', {method:'POST',body:JSON.stringify({sku:'SKU',quantity:1})})", context);
+  assert.equal(writes[0].url, '/api/session');
+  assert.equal(writes[1].options.headers['X-CSRF-Token'], 'test-csrf');
+  assert.equal(writes[1].options.credentials, 'same-origin');
   console.log('CRM UI: lookup and FBW rendering, escaping, tabs, navigation, dates and request races passed');
 })().catch(error => { console.error(error); process.exitCode=1; });
