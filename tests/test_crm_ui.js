@@ -142,6 +142,36 @@ assert.equal(element('inventorySearch').value, 'existing search');
   context.result={...analytics,points:[{date:'2026-09-20',sales:0,returns:0,net:'0.00'}]};
   vm.runInContext('renderAnalytics(result)', context);
   assert.ok(!/NaN|Infinity/.test(element('analyticsBody').innerHTML));
+  // Trim only the initial inactive days; keep returns, adjustments and later zero days.
+  const quiet={sales:0,returns:0,net:'0.00'};
+  context.points=[{...quiet,date:'2026-09-18'},{...quiet,date:'2026-09-19'},
+    {date:'2026-09-20',sales:2,returns:0,net:'12.34'},{...quiet,date:'2026-09-21'}];
+  let chart=vm.runInContext('salesChart(points)',context);
+  assert.match(chart,/2026-09-18 — 2026-09-19/);
+  assert.match(chart,/Данные начинаются с 2026-09-20/);
+  assert.equal((chart.match(/data-chart-tip=/g)||[]).length,2);
+  assert.equal((chart.match(/class="chart-qty-label"/g)||[]).length,2);
+  assert.equal((chart.match(/class="chart-cash-label"/g)||[]).length,2);
+  assert.match(chart,/12,34/);
+  assert.match(chart,/>21.09<\/text>/);
+  assert.match(chart,/<path class="chart-money" d="M [^"]* C /);
+  context.points=[{...quiet,date:'2026-09-20'}];
+  chart=vm.runInContext('salesChart(points)',context);
+  assert.ok(!chart.includes('<svg'));
+  assert.match(chart,/Нет данных для графика/);
+  for (const activity of [{sales:1},{returns:1},{net:'-1.00'},{net:'0.01'}]) {
+    context.points=[{...quiet,date:'2026-09-20',...activity}];
+    chart=vm.runInContext('salesChart(points)',context);
+    assert.match(chart,/<svg/);
+    assert.ok(!/NaN|Infinity/.test(chart));
+  }
+  assert.equal(vm.runInContext('smoothChartPath([[0,0],[3,30],[6,0]])',context),
+    'M 0 0 C 1 0, 2 30, 3 30 C 4 30, 5 0, 6 0');
+  context.points=Array.from({length:100},(_,i)=>({date:'2026-09-20',sales:i+1,returns:0,net:'1.00'}));
+  chart=vm.runInContext('salesChart(points)',context);
+  assert.equal((chart.match(/class="chart-cash-label"/g)||[]).length,100);
+  assert.match(chart,/width="11416"/);
+
   element('analyticsDateFrom').value='2026-09-20'; element('analyticsDateTo').value='2026-09-21'; element('analyticsSku').value='SKU';
   context.fetch=()=>new Promise(resolve=>{finishFirst=resolve;});
   const oldChart=vm.runInContext('loadAnalytics()',context);

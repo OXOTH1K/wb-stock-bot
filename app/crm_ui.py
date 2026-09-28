@@ -57,9 +57,9 @@ INDEX_HTML = r"""<!doctype html>
     .lookup-card pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:12px;border-radius:8px;font-size:12px}
     .source-status{font-size:12px;color:var(--muted);margin:8px 0 14px}.lookup-help{margin:0 18px 16px;color:var(--muted);font-size:13px}
     @media(max-width:800px){.shell{padding:14px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:flex-start;flex-direction:column}.panel-head{align-items:flex-start;flex-direction:column}.search{width:100%;min-width:0}}
-    .chart-wrap{overflow-x:auto}.sales-chart{width:100%;min-width:700px;display:block}.sales-chart text{fill:var(--muted);font-size:12px}
-    .chart-grid{stroke:var(--line)}.chart-zero{stroke:#16a085;stroke-dasharray:4 4}.chart-bar{fill:#7c3aed;opacity:.65}
-    .chart-money{stroke:#087f5b;stroke-width:2.5;fill:none}.chart-dot{fill:#087f5b}.chart-hit{fill:transparent;cursor:crosshair}
+    .chart-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,#fafaff,#fff);padding:12px 0}.sales-chart{width:auto;min-width:100%;height:auto;display:block}.sales-chart text{fill:var(--muted);font-size:12px}
+    .chart-grid{stroke:var(--line)}.chart-zero{stroke:#16a085;stroke-dasharray:4 4}.chart-bar{fill:url(#salesBarGradient)}
+    .chart-money{stroke:#087f5b;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;fill:none}.chart-dot{fill:#fff;stroke:#087f5b;stroke-width:2}.chart-area{fill:url(#salesAreaGradient)}.sales-chart .chart-qty-label{fill:#7c3aed;font-weight:650}.sales-chart .chart-cash-label{fill:#087f5b;font-weight:650}.chart-day-divider{stroke:#edf0f5}.chart-hit{fill:transparent;cursor:crosshair}
     .chart-hit:focus{stroke:#087f5b;stroke-width:2}.chart-legend{display:flex;gap:20px;flex-wrap:wrap}.chart-legend span:first-child{color:#7c3aed}.chart-legend span:last-child{color:#087f5b}
     .analytics-summary .card span{display:block;color:var(--muted);font-size:13px;margin-bottom:8px}.analytics-summary .card strong{display:block;font-size:24px}
     .detail-toolbar{padding:18px}.lookup-form select{width:100%;min-height:40px}
@@ -245,32 +245,57 @@ function renderAnalytics(data) {
   }
   document.getElementById('analyticsBody').innerHTML = html;
 }
-function salesChart(points) {
-  if (!points.length) return '<div class="empty">Нет данных для графика.</div>';
-  const left=70, right=830, top=32, bottom=280, width=right-left, height=bottom-top;
+// Horizontal tangents give a smooth curve through exact daily values, without overshoot.
+function smoothChartPath(coords) {
+  if (!coords.length) return '';
+  let path='M '+coords[0][0]+' '+coords[0][1];
+  for(let i=1;i<coords.length;i++) {
+    const [x0,y0]=coords[i-1], [x1,y1]=coords[i], dx=(x1-x0)/3;
+    path+=' C '+(x0+dx)+' '+y0+', '+(x1-dx)+' '+y1+', '+x1+' '+y1;
+  }
+  return path;
+}
+function salesChart(allPoints) {
+  if (!allPoints.length) return '<div class="empty">Нет данных для графика.</div>';
+  // A return or a monetary adjustment is meaningful even when there are no sales.
+  const first=allPoints.findIndex(p=>Number(p.sales || 0)!==0 || Number(p.returns || 0)!==0 || Number(p.net || 0)!==0);
+  if (first<0) return '<div class="empty"><strong>Нет данных для графика</strong>За выбранный период в загруженном отчёте нет ненулевых продаж, возвратов или начислений. Нулевой график скрыт.</div>';
+  const points=allPoints.slice(first);
+  const notice=first ? '<div class="notice">Начало периода '+esc(allPoints[0].date)+' — '+esc(allPoints[first-1].date)+': в загруженном отчёте нет продаж, возвратов и начислений. Эти дни скрыты на графике. Данные начинаются с '+esc(points[0].date)+'.</div>' : '';
+  const left=76, width=Math.max(660,points.length*112), right=left+width, svgWidth=right+140;
+  const top=40, bottom=280, height=bottom-top;
   const qtyMax=Math.max(4,Math.ceil(Math.max(...points.map(p=>p.sales))/4)*4);
   const cash=points.map(p=>Number(p.net));
-  const cashMin=Math.min(0,...cash), cashMax=Math.max(1,...cash);
+  const rawMin=Math.min(0,...cash), rawMax=Math.max(0,...cash);
+  const cashPad=Math.max(1,(rawMax-rawMin)*0.1);
+  const cashMin=rawMin<0 ? rawMin-cashPad : 0, cashMax=rawMax+cashPad;
   const x=i=>left+(i+0.5)*width/points.length;
   const yQty=v=>bottom-v/qtyMax*height;
   const yCash=v=>bottom-(v-cashMin)/(cashMax-cashMin)*height;
-  let svg='<svg viewBox="0 0 960 340" class="sales-chart" role="img" aria-label="Продажи и начисления по дням: количество слева, рубли справа"><text x="10" y="17">Шт.</text><text x="850" y="17">Рубли</text>';
+  let svg='<svg viewBox="0 0 '+svgWidth+' 390" width="'+svgWidth+'" height="390" class="sales-chart" role="img" aria-label="Продажи и начисления по дням: количество слева, рубли справа">'+
+    '<defs><linearGradient id="salesBarGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#a78bfa"/><stop offset="100%" stop-color="#7c3aed"/></linearGradient><linearGradient id="salesAreaGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#10b981" stop-opacity="0.16"/><stop offset="100%" stop-color="#10b981" stop-opacity="0.02"/></linearGradient></defs>'+
+    '<text x="16" y="20">Шт.</text><text x="'+(right+16)+'" y="20">Рубли</text>';
   for (let i=0;i<=4;i++) {
     const y=bottom-i*height/4;
     svg+='<line class="chart-grid" x1="'+left+'" x2="'+right+'" y1="'+y+'" y2="'+y+'"/>'+
-      '<text text-anchor="end" x="60" y="'+(y+4)+'">'+esc((qtyMax*i/4).toLocaleString('ru-RU',{maximumFractionDigits:1}))+'</text>'+
-      '<text x="840" y="'+(y+4)+'">'+esc((cashMin+(cashMax-cashMin)*i/4).toLocaleString('ru-RU',{maximumFractionDigits:2}))+'</text>';
+      '<text text-anchor="end" x="64" y="'+(y+4)+'">'+esc(qtyMax*i/4)+'</text>'+
+      '<text x="'+(right+16)+'" y="'+(y+4)+'">'+esc((cashMin+(cashMax-cashMin)*i/4).toLocaleString('ru-RU',{maximumFractionDigits:2}))+'</text>';
   }
+  const path=smoothChartPath(cash.map((v,i)=>[x(i),yCash(v)]));
+  svg+='<path class="chart-area" d="'+path+' L '+x(points.length-1)+' '+bottom+' L '+x(0)+' '+bottom+' Z"/>';
   svg+='<line class="chart-zero" x1="'+left+'" x2="'+right+'" y1="'+yCash(0)+'" y2="'+yCash(0)+'"/>';
-  points.forEach((p,i)=>{const bar=Math.max(1,Math.min(30,width/points.length*0.65));svg+='<rect class="chart-bar" x="'+(x(i)-bar/2)+'" y="'+yQty(p.sales)+'" width="'+bar+'" height="'+(bottom-yQty(p.sales))+'"/>';});
-  svg+='<polyline class="chart-money" points="'+cash.map((v,i)=>x(i)+','+yCash(v)).join(' ')+'"/>';
+  points.forEach((p,i)=>{const bar=Math.min(36,width/points.length*0.45);svg+='<rect class="chart-bar" rx="5" x="'+(x(i)-bar/2)+'" y="'+yQty(p.sales)+'" width="'+bar+'" height="'+(bottom-yQty(p.sales))+'"/>';});
+  svg+='<path class="chart-money" d="'+path+'"/>';
   points.forEach((p,i)=>{
     const tip=p.date+' · Продано: '+p.sales+' · Возвраты: '+p.returns+' · К перечислению: '+rubles(p.net);
-    svg+='<circle class="chart-dot" cx="'+x(i)+'" cy="'+yCash(Number(p.net))+'" r="3"/>';
-    svg+='<rect tabindex="0" class="chart-hit" data-chart-tip="'+esc(tip)+'" aria-label="'+esc(tip)+'" x="'+(left+i*width/points.length)+'" y="'+top+'" width="'+width/points.length+'" height="'+height+'"><title>'+esc(tip)+'</title></rect>';
-    if (i===0 || i===points.length-1 || i%Math.max(1,Math.ceil(points.length/6))===0) svg+='<text text-anchor="middle" x="'+x(i)+'" y="310">'+esc(p.date.slice(5).split('-').reverse().join('.'))+'</text>';
+    svg+='<circle class="chart-dot" cx="'+x(i)+'" cy="'+yCash(Number(p.net))+'" r="4"/>';
+    svg+='<line class="chart-day-divider" x1="'+(left+i*width/points.length)+'" x2="'+(left+i*width/points.length)+'" y1="297" y2="371"/>';
+    svg+='<text text-anchor="middle" x="'+x(i)+'" y="314">'+esc(p.date.slice(5).split('-').reverse().join('.'))+'</text>'+
+      '<text class="chart-qty-label" text-anchor="middle" x="'+x(i)+'" y="337">'+esc(p.sales)+' шт.</text>'+
+      '<text class="chart-cash-label" text-anchor="middle" x="'+x(i)+'" y="360">'+esc(rubles(p.net))+'</text>';
+    svg+='<rect tabindex="0" class="chart-hit" data-chart-tip="'+esc(tip)+'" aria-label="'+esc(tip)+'" x="'+(left+i*width/points.length)+'" y="'+top+'" width="'+width/points.length+'" height="335"><title>'+esc(tip)+'</title></rect>';
   });
-  return '<p class="chart-legend"><span>■ Продано, шт. — левая шкала</span><span>━ К перечислению, ₽ — правая шкала</span></p><div class="chart-wrap">'+svg+'</svg></div><p id="chartTooltip" class="sub" aria-live="polite">Наведите курсор, нажмите на день или выберите его клавишей Tab.</p>';
+  return notice+'<p class="chart-legend"><span>■ Продано, шт. — левая шкала</span><span>━ К перечислению, ₽ — правая шкала</span></p><p class="sub">Под каждой датой — продажи и начисление за этот день. Длинный график можно прокручивать горизонтально.</p><div class="chart-wrap">'+svg+'</svg></div><p id="chartTooltip" class="sub" aria-live="polite">Наведите курсор, нажмите на день или выберите его клавишей Tab. Плавная линия соединяет дневные значения.</p>';
 }
 
 async function loadFbwOrders(poll=false) {
