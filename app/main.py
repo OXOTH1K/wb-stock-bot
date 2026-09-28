@@ -16,6 +16,7 @@ from .shared_inventory import SharedInventoryService
 from .telegram import TelegramBot
 from .wb_client import WildberriesClient
 from .wb_order_lookup import WBOrderLookup
+from .wb_sales_analytics import WBSalesAnalytics
 
 
 async def wait_for_shutdown(stop_event, tasks):
@@ -117,12 +118,14 @@ async def amain() -> None:
                     )
 
             order_lookup = WBOrderLookup(wb, db)
+            sales_analytics = WBSalesAnalytics(wb, db, lambda: service.products, settings.wb_finance_token)
             crm = CRMServer(
                 settings,
                 service,
                 db,
                 shared_inventory=shared_inventory,
                 order_lookup=order_lookup,
+                sales_analytics=sales_analytics,
             )
             await crm.start()
 
@@ -273,6 +276,7 @@ async def amain() -> None:
                 ),
             ]
             if settings.crm_enabled:
+                tasks.append(asyncio.create_task(sales_analytics.loop(), name="wb-sales-analytics"))
                 tasks.append(asyncio.create_task(order_lookup.loop(), name="wb-order-archive"))
             if ozon is not None:
                 tasks.extend(

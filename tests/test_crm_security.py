@@ -78,7 +78,7 @@ class CRMSecurityHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_every_route_and_files_require_auth_and_no_forwarded_bypass(self):
         before = self.db.conn.total_changes
         paths = ['/', '/healthz', '/api/session', '/api/inventory', '/api/inventory/movements',
-                 '/api/wb/order-lookup?number=1', '/api/wb/fbw-orders', '/.env', '/.git/config',
+                 '/api/wb/order-lookup?number=1', '/api/wb/fbw-orders', '/api/wb/sales-analytics', '/.env', '/.git/config',
                  '/data/stocks.sqlite3', '/api/inventory/set', '/api/inventory/adjust', '/api/inventory/available/set']
         for path in paths:
             for method in ('GET', 'POST', 'OPTIONS'):
@@ -154,3 +154,16 @@ class CRMSecurityHTTPTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post('/api/inventory/set', json={'sku': 'SKU', 'quantity': 7},
             headers=headers | {'Origin': 'https://crm.example.ru:4443'})
         self.assertEqual(response.status, 200)
+
+    async def test_sales_analytics_validates_period_and_reports_loading(self):
+        from app.wb_sales_analytics import WBSalesAnalytics
+        self.crm.sales_analytics = WBSalesAnalytics(None, self.db, lambda: self.crm.service.products)
+        response = await self.client.get('/api/wb/sales-analytics?date_from=bad&date_to=2026-09-20', headers=auth())
+        self.assertEqual(response.status, 400)
+        response = await self.client.get('/api/wb/sales-analytics?date_from=2026-09-20&date_to=2026-09-21&sku=SKU', headers=auth())
+        self.assertEqual(response.status, 200)
+        data = await response.json()
+        self.assertFalse(data['ready'])
+        self.assertTrue(data['syncing'])
+        self.assertEqual(data['points'], [])
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')

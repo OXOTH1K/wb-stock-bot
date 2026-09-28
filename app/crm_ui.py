@@ -57,6 +57,12 @@ INDEX_HTML = r"""<!doctype html>
     .lookup-card pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:12px;border-radius:8px;font-size:12px}
     .source-status{font-size:12px;color:var(--muted);margin:8px 0 14px}.lookup-help{margin:0 18px 16px;color:var(--muted);font-size:13px}
     @media(max-width:800px){.shell{padding:14px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:flex-start;flex-direction:column}.panel-head{align-items:flex-start;flex-direction:column}.search{width:100%;min-width:0}}
+    .chart-wrap{overflow-x:auto}.sales-chart{width:100%;min-width:700px;display:block}.sales-chart text{fill:var(--muted);font-size:12px}
+    .chart-grid{stroke:var(--line)}.chart-zero{stroke:#16a085;stroke-dasharray:4 4}.chart-bar{fill:#7c3aed;opacity:.65}
+    .chart-money{stroke:#087f5b;stroke-width:2.5;fill:none}.chart-dot{fill:#087f5b}.chart-hit{fill:transparent;cursor:crosshair}
+    .chart-hit:focus{stroke:#087f5b;stroke-width:2}.chart-legend{display:flex;gap:20px;flex-wrap:wrap}.chart-legend span:first-child{color:#7c3aed}.chart-legend span:last-child{color:#087f5b}
+    .analytics-summary .card span{display:block;color:var(--muted);font-size:13px;margin-bottom:8px}.analytics-summary .card strong{display:block;font-size:24px}
+    .detail-toolbar{padding:18px}.lookup-form select{width:100%;min-height:40px}
   </style>
 </head>
 <body>
@@ -70,6 +76,7 @@ INDEX_HTML = r"""<!doctype html>
     <button class="btn" id="inventoryTab" role="tab" aria-controls="inventoryView" aria-selected="true">Остатки</button>
     <button class="btn" id="lookupTab" role="tab" aria-controls="lookupView" aria-selected="false">Поиск заказа WB</button>
     <button class="btn" id="fbwTab" role="tab" aria-controls="fbwView" aria-selected="false">Заказы FBW</button>
+    <button class="btn" id="analyticsTab" role="tab" aria-controls="analyticsView" aria-selected="false">Продажи WB</button>
   </nav>
   <section id="inventoryView" role="tabpanel" aria-labelledby="inventoryTab">
     <div id="inventoryCards" class="cards"></div>
@@ -94,7 +101,7 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </section>
   <section id="fbwView" role="tabpanel" aria-labelledby="fbwTab" hidden>
-    <div class="panel">
+    <div class="panel" id="fbwList">
       <div class="panel-head"><div><h2>Заказы со складов WB</h2><div class="sub">Выберите период и раскройте артикул, чтобы увидеть заказы товара</div></div></div>
       <form id="fbwForm" class="lookup-form">
         <label for="fbwDateFrom">С даты<input id="fbwDateFrom" class="search" type="date" required></label>
@@ -104,16 +111,33 @@ INDEX_HTML = r"""<!doctype html>
       <p class="lookup-help">Период — по дате заказа, по московскому времени. Статус — последнее известное событие из отчётов WB: продажа, отмена или возврат; этапы доставки недоступны. Отчёты обновляются с задержкой. По номеру заказа можно открыть подробности.</p>
       <div id="fbwBody" class="lookup-body" aria-live="polite"></div>
     </div>
+    <div class="panel" id="fbwDetail" hidden>
+      <div class="detail-toolbar"><button type="button" class="btn" id="fbwBack">← Назад к заказам FBW</button></div>
+      <div id="fbwDetailBody" class="lookup-body" aria-live="polite"></div>
+    </div>
+  </section>
+  <section id="analyticsView" role="tabpanel" aria-labelledby="analyticsTab" hidden>
+    <div class="panel">
+      <div class="panel-head"><div><h2>Продажи и начисления WB</h2><div class="sub">Все продажи WB: FBW и FBS</div></div></div>
+      <form id="analyticsForm" class="lookup-form">
+        <label for="analyticsSku">Артикул<select id="analyticsSku" class="search"><option value="">Выберите артикул</option></select></label>
+        <label for="analyticsDateFrom">С даты<input id="analyticsDateFrom" class="search" type="date" required></label>
+        <label for="analyticsDateTo">По дату включительно<input id="analyticsDateTo" class="search" type="date" required></label>
+        <button class="btn primary" type="submit">Показать график</button>
+      </form>
+      <p class="lookup-help">По опубликованным еженедельным финансовым отчётам, по дате операции (МСК). «К перечислению за товар» уже учитывает комиссию WB и платёжные услуги; возвраты уменьшают сумму. Логистика, хранение и другие отдельные расходы не вычитаются. Это начисление, а не подтверждение банковского перевода. Свежие продажи появляются после публикации отчёта.</p>
+      <div id="analyticsBody" class="lookup-body" aria-live="polite"></div>
+    </div>
   </section>
 </div>
 
 <script>
 let inventoryRows = [];
 let activeView = 'inventory', lookupSequence = 0, lookupTimer = null;
-let fbwSequence = 0, fbwTimer = null;
+let fbwSequence = 0, fbwTimer = null, fbwNeedsPoll = false;
 function showView(view) {
   activeView = view;
-  for (const name of ['inventory','lookup','fbw']) {
+  for (const name of ['inventory','lookup','fbw','analytics']) {
     document.getElementById(name+'View').hidden = name !== view;
     document.getElementById(name+'Tab').setAttribute('aria-selected', String(name === view));
   }
@@ -122,12 +146,16 @@ function showView(view) {
     if (document.getElementById('orderNumber').value.trim()) lookupOrder();
   }
   else { clearTimeout(lookupTimer); lookupSequence++; }
-  if (view === 'fbw') loadFbwOrders();
+  clearTimeout(detailTimer); detailSequence++;
+  if (view === 'fbw') {if (fbwOrderNumber) openFbwOrder(fbwOrderNumber,true); else loadFbwOrders();}
   else { clearTimeout(fbwTimer); fbwSequence++; }
+  if (view === 'analytics') loadAnalytics();
+  else {clearTimeout(analyticsTimer); analyticsSequence++;}
 }
 function refreshView() {
   if (activeView === 'inventory') loadInventory();
-  else if (activeView === 'fbw') loadFbwOrders();
+  else if (activeView === 'fbw') {if (fbwOrderNumber) openFbwOrder(fbwOrderNumber,true); else loadFbwOrders();}
+  else if (activeView === 'analytics') loadAnalytics();
   else lookupOrder();
 }
 function displayDate(value) {
@@ -148,10 +176,103 @@ async function lookupOrder(poll=false) {
     if (data.syncing && activeView === 'lookup') lookupTimer = setTimeout(() => lookupOrder(true), 5000);
   } catch (e) { if (sequence === lookupSequence) setError('lookupBody', e); }
 }
-function openFbwOrder(number) {
-  document.getElementById('orderNumber').value = number;
-  showView('lookup');
+let fbwOrderNumber = '', detailSequence = 0, detailTimer = null, fbwScroll = 0, fbwReturnFocus = null;
+async function openFbwOrder(number, poll=false) {
+  if (!poll) {
+    fbwScroll = globalThis.scrollY || 0;
+    fbwReturnFocus = document.activeElement;
+    fbwOrderNumber = number;
+    clearTimeout(fbwTimer); fbwSequence++;
+    document.getElementById('fbwList').hidden = true;
+    document.getElementById('fbwDetail').hidden = false;
+    document.getElementById('fbwDetailBody').innerHTML = '<div class="spinner">Ищу заказ…</div>';
+    document.getElementById('fbwBack').focus();
+  }
+  const sequence = ++detailSequence;
+  clearTimeout(detailTimer);
+  try {
+    const data = await api('/api/wb/order-lookup?number='+encodeURIComponent(number));
+    if (sequence !== detailSequence || number !== fbwOrderNumber || activeView !== 'fbw') return;
+    renderOrderLookup(data, 'fbwDetailBody');
+    if (data.syncing) detailTimer = setTimeout(() => openFbwOrder(number, true), 5000);
+  } catch(e) {if (sequence === detailSequence) setError('fbwDetailBody', e);}
 }
+function backToFbw() {
+  clearTimeout(detailTimer); detailSequence++; fbwOrderNumber = '';
+  document.getElementById('fbwDetail').hidden = true;
+  document.getElementById('fbwList').hidden = false;
+  if (fbwReturnFocus?.isConnected) fbwReturnFocus.focus({preventScroll:true});
+  else document.getElementById('fbwTab').focus({preventScroll:true});
+  globalThis.scrollTo?.({top:fbwScroll});
+  if (fbwNeedsPoll) fbwTimer = setTimeout(() => loadFbwOrders(true), 5000);
+}
+let analyticsSequence = 0, analyticsTimer = null;
+const rubles = value => Number(value).toLocaleString('ru-RU', {minimumFractionDigits:2, maximumFractionDigits:2})+' ₽';
+async function loadAnalytics(poll=false) {
+  if (!document.getElementById('analyticsForm').reportValidity()) return;
+  const sequence = ++analyticsSequence;
+  clearTimeout(analyticsTimer);
+  const from = document.getElementById('analyticsDateFrom').value;
+  const to = document.getElementById('analyticsDateTo').value;
+  const sku = document.getElementById('analyticsSku').value;
+  if (from > to) {setError('analyticsBody', 'Дата начала не должна быть позже даты окончания.'); return;}
+  if (!poll) document.getElementById('analyticsBody').innerHTML = '<div class="spinner">Загружаю финансовый отчёт…</div>';
+  try {
+    const data = await api('/api/wb/sales-analytics?'+new URLSearchParams({date_from:from,date_to:to,sku}));
+    if (sequence !== analyticsSequence) return;
+    const select = document.getElementById('analyticsSku');
+    select.innerHTML = '<option value="">Выберите артикул</option>'+data.products.map(p => '<option value="'+esc(p.sku)+'">'+esc(p.sku)+' — '+esc(p.title)+'</option>').join('');
+    select.value = sku;
+    renderAnalytics(data);
+    if (data.syncing && activeView === 'analytics') analyticsTimer = setTimeout(() => loadAnalytics(true), 5000);
+  } catch(e) {if (sequence === analyticsSequence) setError('analyticsBody', e);}
+}
+function renderAnalytics(data) {
+  let html = '<p><strong>'+esc(data.date_from)+' — '+esc(data.date_to)+'</strong> · FBW и FBS · МСК</p>';
+  if (data.error) html += '<div class="notice">'+esc(data.error)+'</div>';
+  if (data.syncing) html += '<p class="source-status">Финансовый отчёт загружается. Это может занять несколько минут; результат обновится автоматически.</p>';
+  if (data.updated_at) html += '<p class="source-status">Загружено: '+esc(displayDate(data.updated_at))+(data.stale ? ' · сохранённые данные, требуется обновление' : '')+'</p>';
+  if (!data.sku) html += '<div class="empty">Выберите артикул товара.</div>';
+  else if (!data.ready) html += '<div class="empty">Финансовые данные пока не получены. Нулевые значения не подставляются.</div>';
+  else {
+    html += '<div class="cards analytics-summary"><div class="card"><span>Продано</span><strong>'+esc(data.totals.sales)+' шт.</strong></div>'+
+      '<div class="card"><span>Возвраты</span><strong>'+esc(data.totals.returns)+' шт.</strong></div>'+
+      '<div class="card"><span>К перечислению за товар</span><strong>'+esc(rubles(data.totals.net))+'</strong></div></div>';
+    if (!data.has_rows) html += '<div class="notice">В опубликованных отчётах за период нет операций по этому артикулу. Свежие продажи ещё могут не попасть в отчёт.</div>';
+    html += salesChart(data.points);
+    html += '<details><summary>Данные по дням</summary><div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Дата операции</th><th>Продано, шт.</th><th>Возвраты, шт.</th><th>К перечислению, ₽</th></tr></thead><tbody>'+
+      data.points.map(p => '<tr><td>'+esc(p.date)+'</td><td>'+esc(p.sales)+'</td><td>'+esc(p.returns)+'</td><td>'+esc(rubles(p.net))+'</td></tr>').join('')+'</tbody></table></div></details>';
+  }
+  document.getElementById('analyticsBody').innerHTML = html;
+}
+function salesChart(points) {
+  if (!points.length) return '<div class="empty">Нет данных для графика.</div>';
+  const left=70, right=830, top=32, bottom=280, width=right-left, height=bottom-top;
+  const qtyMax=Math.max(4,Math.ceil(Math.max(...points.map(p=>p.sales))/4)*4);
+  const cash=points.map(p=>Number(p.net));
+  const cashMin=Math.min(0,...cash), cashMax=Math.max(1,...cash);
+  const x=i=>left+(i+0.5)*width/points.length;
+  const yQty=v=>bottom-v/qtyMax*height;
+  const yCash=v=>bottom-(v-cashMin)/(cashMax-cashMin)*height;
+  let svg='<svg viewBox="0 0 960 340" class="sales-chart" role="img" aria-label="Продажи и начисления по дням: количество слева, рубли справа"><text x="10" y="17">Шт.</text><text x="850" y="17">Рубли</text>';
+  for (let i=0;i<=4;i++) {
+    const y=bottom-i*height/4;
+    svg+='<line class="chart-grid" x1="'+left+'" x2="'+right+'" y1="'+y+'" y2="'+y+'"/>'+
+      '<text text-anchor="end" x="60" y="'+(y+4)+'">'+esc((qtyMax*i/4).toLocaleString('ru-RU',{maximumFractionDigits:1}))+'</text>'+
+      '<text x="840" y="'+(y+4)+'">'+esc((cashMin+(cashMax-cashMin)*i/4).toLocaleString('ru-RU',{maximumFractionDigits:2}))+'</text>';
+  }
+  svg+='<line class="chart-zero" x1="'+left+'" x2="'+right+'" y1="'+yCash(0)+'" y2="'+yCash(0)+'"/>';
+  points.forEach((p,i)=>{const bar=Math.max(1,Math.min(30,width/points.length*0.65));svg+='<rect class="chart-bar" x="'+(x(i)-bar/2)+'" y="'+yQty(p.sales)+'" width="'+bar+'" height="'+(bottom-yQty(p.sales))+'"/>';});
+  svg+='<polyline class="chart-money" points="'+cash.map((v,i)=>x(i)+','+yCash(v)).join(' ')+'"/>';
+  points.forEach((p,i)=>{
+    const tip=p.date+' · Продано: '+p.sales+' · Возвраты: '+p.returns+' · К перечислению: '+rubles(p.net);
+    svg+='<circle class="chart-dot" cx="'+x(i)+'" cy="'+yCash(Number(p.net))+'" r="3"/>';
+    svg+='<rect tabindex="0" class="chart-hit" data-chart-tip="'+esc(tip)+'" aria-label="'+esc(tip)+'" x="'+(left+i*width/points.length)+'" y="'+top+'" width="'+width/points.length+'" height="'+height+'"><title>'+esc(tip)+'</title></rect>';
+    if (i===0 || i===points.length-1 || i%Math.max(1,Math.ceil(points.length/6))===0) svg+='<text text-anchor="middle" x="'+x(i)+'" y="310">'+esc(p.date.slice(5).split('-').reverse().join('.'))+'</text>';
+  });
+  return '<p class="chart-legend"><span>■ Продано, шт. — левая шкала</span><span>━ К перечислению, ₽ — правая шкала</span></p><div class="chart-wrap">'+svg+'</svg></div><p id="chartTooltip" class="sub" aria-live="polite">Наведите курсор, нажмите на день или выберите его клавишей Tab.</p>';
+}
+
 async function loadFbwOrders(poll=false) {
   const form = document.getElementById('fbwForm');
   if (!form.reportValidity()) return;
@@ -170,6 +291,7 @@ async function loadFbwOrders(poll=false) {
   } catch (e) { if (sequence === fbwSequence) setError('fbwBody', e); }
 }
 function renderFbwOrders(data) {
+  fbwNeedsPoll = !!data.syncing;
   const body = document.getElementById('fbwBody');
   const expanded = new Set(Array.from(body.querySelectorAll('details[data-fbw-group][open]'), node => node.dataset.fbwGroup));
   let html = '<p><strong>Период: '+esc(data.date_from)+' — '+esc(data.date_to)+'</strong> · МСК · обе даты включительно</p>'+
@@ -197,7 +319,7 @@ function renderFbwOrders(data) {
   }
   body.innerHTML = html;
 }
-function renderOrderLookup(data) {
+function renderOrderLookup(data, target='lookupBody') {
   let html = '<p class="sub">'+esc(data.coverage)+'</p>';
   for (const source of data.sources) {
     html += '<div class="source-status"><strong>'+esc(source.name)+'</strong>: '+
@@ -218,7 +340,7 @@ function renderOrderLookup(data) {
     html += item.events.length ? '<ol class="timeline">'+item.events.map(event => '<li><strong>'+esc(event.title)+'</strong><div>'+esc(displayDate(event.at))+(event.observed ? ' · зафиксировано ботом' : '')+'</div><div class="sub">'+esc(event.source)+'</div></li>').join('')+'</ol>' : '<p class="muted">Датированных событий пока нет.</p>';
     html += '<details><summary>Все полученные данные WB</summary>'+item.raw.map(row => '<h4>'+esc(row.source)+'</h4><div class="sub">Получено: '+esc(displayDate(row.observed_at))+'</div><pre>'+esc(JSON.stringify(row.data,null,2))+'</pre>').join('')+'</details></article>';
   }
-  document.getElementById('lookupBody').innerHTML = html;
+  document.getElementById(target).innerHTML = html;
 }
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -304,7 +426,7 @@ async function setAvailable(sku, key) {
 }
 
 document.getElementById('refreshButton').addEventListener('click', refreshView);
-for (const view of ['inventory','lookup','fbw']) document.getElementById(view+'Tab').addEventListener('click', () => showView(view));
+for (const view of ['inventory','lookup','fbw','analytics']) document.getElementById(view+'Tab').addEventListener('click', () => showView(view));
 document.getElementById('inventoryBody').addEventListener('click', event => {
   const button = event.target.closest('button[data-stock-action]');
   if (!button) return;
@@ -313,6 +435,12 @@ document.getElementById('inventoryBody').addEventListener('click', event => {
   else if (stockAction === 'available') setAvailable(sku,key);
 });
 const moscowDay = (daysAgo=0) => new Date(Date.now() + 3*3600000 - daysAgo*86400000).toISOString().slice(0,10);
+document.getElementById('fbwBack').addEventListener('click', backToFbw);
+document.getElementById('analyticsDateFrom').value = moscowDay(29);
+document.getElementById('analyticsDateTo').value = moscowDay();
+document.getElementById('analyticsForm').addEventListener('submit', event => {event.preventDefault(); loadAnalytics();});
+for (const id of ['analyticsDateFrom','analyticsDateTo','analyticsSku']) document.getElementById(id).addEventListener('input', () => {clearTimeout(analyticsTimer); analyticsSequence++; document.getElementById('analyticsBody').innerHTML = '<div class="empty">Нажмите «Показать график» для выбранных параметров.</div>';});
+for (const kind of ['pointerover','focusin','click']) document.getElementById('analyticsBody').addEventListener(kind, event => {const node=event.target.closest('[data-chart-tip]'); if(node) document.getElementById('chartTooltip').textContent=node.dataset.chartTip;});
 document.getElementById('fbwDateFrom').value = moscowDay(6);
 document.getElementById('fbwDateTo').value = moscowDay();
 document.getElementById('fbwForm').addEventListener('submit', event => {event.preventDefault(); loadFbwOrders();});
