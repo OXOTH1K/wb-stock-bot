@@ -11,6 +11,7 @@ from app.crm import CRMServer
 from app.crm_ui import INDEX_HTML
 from app.db import StateDB
 from app.models import Product
+from app.wb_order_lookup import WBOrderLookup
 
 
 class FakeService:
@@ -212,6 +213,23 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         lookup.search.assert_called_once_with("abc.123")
 
+    async def test_fbw_orders_period_endpoint(self):
+        self.crm.order_lookup = WBOrderLookup(Mock(), self.db)
+        self.db.archive_wb_orders("orders", [{"srid": "fbw-123", "nmId": 100,
+            "supplierArticle": "SKU-A", "date": "2026-09-20T12:00:00", "warehouseType": "Склад WB"}])
+        response = await self.client.get("/api/wb/fbw-orders", params={"date_from": "2026-09-20", "date_to": "2026-09-20"})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        data = await response.json()
+        self.assertEqual(data["order_count"], 1)
+        self.assertEqual(data["groups"][0]["title"], "Alpha")
+        for params in ({}, {"date_from": "2026-09-21", "date_to": "2026-09-20"}):
+            response = await self.client.get("/api/wb/fbw-orders", params=params)
+            self.assertEqual(response.status, 400)
+            self.assertIn("период", (await response.json())["error"])
+        self.crm.order_lookup = None
+        self.assertEqual((await self.client.get("/api/wb/fbw-orders")).status, 503)
+
     def test_inventory_and_lookup_ui_layout(self):
         self.assertNotIn("WB заказы", INDEX_HTML)
         self.assertNotIn("OZON заказы", INDEX_HTML)
@@ -226,8 +244,9 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(".table-wrap{overflow:visible}", INDEX_HTML)
         self.assertIn(".panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:visible}", INDEX_HTML)
         self.assertNotIn("max-height:calc(100vh", INDEX_HTML)
-        title_pos = INDEX_HTML.index('<div class="title">')
-        sku_pos = INDEX_HTML.index('<div class="sku">')
+        inventory_renderer = INDEX_HTML.split("function renderInventory()", 1)[1].split("async function setStock", 1)[0]
+        title_pos = inventory_renderer.index('<div class="title">')
+        sku_pos = inventory_renderer.index('<div class="sku">')
         self.assertLess(title_pos, sku_pos)
         self.assertIn('title="Сохранить «Мой склад»"', INDEX_HTML)
         self.assertIn('title="Сохранить «Доступно для заказа»"', INDEX_HTML)
@@ -235,6 +254,9 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("FBO", INDEX_HTML)
         self.assertIn("WB FBS намеренно 0", INDEX_HTML)
         self.assertIn("Ozon FBS намеренно 0", INDEX_HTML)
+        self.assertIn('id="fbwView"', INDEX_HTML)
+        self.assertIn('id="fbwDateFrom"', INDEX_HTML)
+        self.assertIn('id="fbwDateTo"', INDEX_HTML)
 
     async def test_network_allowlist_accepts_lan_and_rejects_other_networks(self):
         self.crm._allowed_networks = (
@@ -248,6 +270,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.crm._allowed_networks = (__import__("ipaddress").ip_network("192.168.1.0/24"),)
         response = await self.client.get("/api/wb/order-lookup?number=123")
         self.assertEqual(response.status, 403)
+        self.assertEqual((await self.client.get("/api/wb/fbw-orders")).status, 403)
 
 
 class CRMAuthTests(unittest.IsolatedAsyncioTestCase):
@@ -272,6 +295,7 @@ class CRMAuthTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def test_basic_auth_protects_crm(self):
+        self.assertEqual((await self.client.get("/api/wb/fbw-orders")).status, 401)
         response = await self.client.get("/api/wb/order-lookup?number=123")
         self.assertEqual(response.status, 401)
         response = await self.client.get("/healthz")

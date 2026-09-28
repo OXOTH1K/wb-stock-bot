@@ -82,6 +82,7 @@ class CRMServer:
                 ),
                 web.get("/api/inventory/movements", self.inventory_movements),
                 web.get("/api/wb/order-lookup", self.lookup_wb_order),
+                web.get("/api/wb/fbw-orders", self.fbw_orders),
             ]
         )
 
@@ -134,6 +135,17 @@ class CRMServer:
         if self.order_lookup is None:
             return web.json_response({"error": "Поиск WB-заказов не подключён."}, status=503)
         return web.json_response(self.order_lookup.search(number), headers={"Cache-Control": "no-store"})
+
+    async def fbw_orders(self, request: web.Request) -> web.Response:
+        if self.order_lookup is None:
+            return web.json_response({"error": "Архив WB-заказов не подключён."}, status=503)
+        try:
+            data = self.order_lookup.fbw_orders(
+                request.query.get("date_from", ""), request.query.get("date_to", ""), self.service.products
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
 
     async def health(self, request: web.Request) -> web.Response:
         return web.json_response(

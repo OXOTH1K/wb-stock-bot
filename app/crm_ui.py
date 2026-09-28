@@ -41,7 +41,12 @@ INDEX_HTML = r"""<!doctype html>
     .search{border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:230px}
     .spinner{color:var(--muted);padding:20px}.error{color:var(--bad);padding:16px}
     [hidden]{display:none!important}
-    .tabs{display:flex;gap:8px;margin-bottom:18px}.tabs button[aria-selected="true"]{background:var(--accent);color:#fff}
+    .tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}.tabs button[aria-selected="true"]{background:var(--accent);color:#fff}
+    .fbw-group{border:1px solid var(--line);border-radius:10px;margin:12px 0;overflow:hidden}
+    .fbw-group summary{cursor:pointer;padding:14px 16px;background:#fafafa;overflow-wrap:anywhere}
+    .fbw-group summary .badge{margin-left:10px}.fbw-table-wrap{overflow-x:auto}
+    .fbw-table{min-width:800px}.fbw-table th{position:static}.fbw-table td{vertical-align:top;max-width:310px;overflow-wrap:anywhere}
+    .order-link{border:0;background:none;padding:0;text-align:left;color:#6d28d9;text-decoration:underline;overflow-wrap:anywhere}
     .lookup-form{padding:18px;display:flex;gap:10px;align-items:end;flex-wrap:wrap}
     .lookup-form label{display:grid;gap:6px;flex:1;min-width:230px}.lookup-form input{width:100%}
     .lookup-body{padding:0 18px 18px}.lookup-card{border-top:1px solid var(--line);padding:20px 0}
@@ -64,6 +69,7 @@ INDEX_HTML = r"""<!doctype html>
   <nav class="tabs" role="tablist" aria-label="Разделы CRM">
     <button class="btn" id="inventoryTab" role="tab" aria-controls="inventoryView" aria-selected="true" onclick="showView('inventory')">Остатки</button>
     <button class="btn" id="lookupTab" role="tab" aria-controls="lookupView" aria-selected="false" onclick="showView('lookup')">Поиск заказа WB</button>
+    <button class="btn" id="fbwTab" role="tab" aria-controls="fbwView" aria-selected="false" onclick="showView('fbw')">Заказы FBW</button>
   </nav>
   <section id="inventoryView" role="tabpanel" aria-labelledby="inventoryTab">
     <div id="inventoryCards" class="cards"></div>
@@ -87,14 +93,27 @@ INDEX_HTML = r"""<!doctype html>
       <div id="lookupBody" class="lookup-body" aria-live="polite"><div class="empty">Введите номер, чтобы увидеть сведения о заказе и его путь.</div></div>
     </div>
   </section>
+  <section id="fbwView" role="tabpanel" aria-labelledby="fbwTab" hidden>
+    <div class="panel">
+      <div class="panel-head"><div><h2>Заказы со складов WB</h2><div class="sub">Выберите период и раскройте артикул, чтобы увидеть заказы товара</div></div></div>
+      <form id="fbwForm" class="lookup-form">
+        <label for="fbwDateFrom">С даты<input id="fbwDateFrom" class="search" type="date" required></label>
+        <label for="fbwDateTo">По дату включительно<input id="fbwDateTo" class="search" type="date" required></label>
+        <button class="btn primary" type="submit">Показать заказы</button>
+      </form>
+      <p class="lookup-help">Период — по дате заказа, по московскому времени. Статус — последнее известное событие из отчётов WB: продажа, отмена или возврат; этапы доставки недоступны. Отчёты обновляются с задержкой. По номеру заказа можно открыть подробности.</p>
+      <div id="fbwBody" class="lookup-body" aria-live="polite"></div>
+    </div>
+  </section>
 </div>
 
 <script>
 let inventoryRows = [];
 let activeView = 'inventory', lookupSequence = 0, lookupTimer = null;
+let fbwSequence = 0, fbwTimer = null;
 function showView(view) {
   activeView = view;
-  for (const name of ['inventory','lookup']) {
+  for (const name of ['inventory','lookup','fbw']) {
     document.getElementById(name+'View').hidden = name !== view;
     document.getElementById(name+'Tab').setAttribute('aria-selected', String(name === view));
   }
@@ -103,9 +122,12 @@ function showView(view) {
     if (document.getElementById('orderNumber').value.trim()) lookupOrder();
   }
   else { clearTimeout(lookupTimer); lookupSequence++; }
+  if (view === 'fbw') loadFbwOrders();
+  else { clearTimeout(fbwTimer); fbwSequence++; }
 }
 function refreshView() {
   if (activeView === 'inventory') loadInventory();
+  else if (activeView === 'fbw') loadFbwOrders();
   else lookupOrder();
 }
 function displayDate(value) {
@@ -125,6 +147,55 @@ async function lookupOrder(poll=false) {
     renderOrderLookup(data);
     if (data.syncing && activeView === 'lookup') lookupTimer = setTimeout(() => lookupOrder(true), 5000);
   } catch (e) { if (sequence === lookupSequence) setError('lookupBody', e); }
+}
+function openFbwOrder(number) {
+  document.getElementById('orderNumber').value = number;
+  showView('lookup');
+}
+async function loadFbwOrders(poll=false) {
+  const form = document.getElementById('fbwForm');
+  if (!form.reportValidity()) return;
+  const from = document.getElementById('fbwDateFrom').value;
+  const to = document.getElementById('fbwDateTo').value;
+  const sequence = ++fbwSequence;
+  clearTimeout(fbwTimer);
+  if (from > to) {setError('fbwBody', 'Дата начала не должна быть позже даты окончания.'); return;}
+  // Keep the list while updating so expanded products survive refresh and a return from details.
+  if (!poll && !document.getElementById('fbwBody').innerHTML) document.getElementById('fbwBody').innerHTML = '<div class="spinner">Загружаю заказы FBW…</div>';
+  try {
+    const data = await api('/api/wb/fbw-orders?'+new URLSearchParams({date_from:from,date_to:to}));
+    if (sequence !== fbwSequence) return;
+    renderFbwOrders(data);
+    if (data.syncing && activeView === 'fbw') fbwTimer = setTimeout(() => loadFbwOrders(true), 5000);
+  } catch (e) { if (sequence === fbwSequence) setError('fbwBody', e); }
+}
+function renderFbwOrders(data) {
+  const body = document.getElementById('fbwBody');
+  const expanded = new Set(Array.from(body.querySelectorAll('details[data-fbw-group][open]'), node => node.dataset.fbwGroup));
+  let html = '<p><strong>Период: '+esc(data.date_from)+' — '+esc(data.date_to)+'</strong> · МСК · обе даты включительно</p>'+
+    '<div class="cards"><div class="card"><div class="n">'+esc(data.order_count)+'</div><div class="l">Заказов в архиве за период</div></div>'+
+    '<div class="card"><div class="n">'+esc(data.product_count)+'</div><div class="l">Артикулов</div></div></div>';
+  for (const source of data.sources) {
+    html += '<div class="source-status"><strong>'+esc(source.name)+'</strong>: '+
+      esc(source.syncing ? 'загрузка…' : (source.updated_at ? 'обновлено '+displayDate(source.updated_at) : 'ещё не загружен'))+
+      (source.error ? '<div class="notice">'+esc(source.error)+'</div>' : '')+'</div>';
+  }
+  if (data.partial) html += '<div class="notice">Данные пока неполные: часть отчётов ещё не загружена или недоступна. Количество и статусы могут измениться после обновления.</div>';
+  html += '<p class="sub">Показаны заказы из сохранённого архива. Первичная загрузка охватывает отчёты за 90 дней; более ранние заказы доступны, если уже были сохранены. Нумерация начинается с 1 внутри каждого артикула; сначала новые заказы.</p>';
+  if (data.unclassified_count) html += '<div class="notice">Без подтверждённого типа склада: '+esc(data.unclassified_count)+'. Эти заказы не включены в список FBW.</div>';
+  if (!data.groups.length) html += '<div class="empty">'+(data.syncing ? 'Архив загружается. Список обновится автоматически.' : 'В доступном архиве нет заказов FBW за выбранный период.')+'</div>';
+  for (const group of data.groups) {
+    html += '<details class="fbw-group" data-fbw-group="'+esc(group.key)+'"'+(expanded.has(group.key) ? ' open' : '')+'><summary><strong>'+esc(group.title)+'</strong> · '+esc(group.article)+'<span class="badge">Заказов: '+esc(group.count)+'</span></summary>'+
+      '<div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>№</th><th>Номер заказа</th><th>Заказан</th><th>Склад отгрузки</th><th>Регион назначения</th><th>Статус по отчётам WB</th></tr></thead><tbody>';
+    for (const order of group.orders) {
+      html += '<tr><td>'+esc(order.index)+'</td><td><button type="button" class="order-link" data-order-number="'+esc(order.lookup_number)+'">'+esc(order.number)+'</button>'+
+        (order.number !== order.lookup_number ? '<div class="sku">srid: '+esc(order.lookup_number)+'</div>' : '')+'</td>'+
+        '<td>'+esc(displayDate(order.created_at))+'</td><td>'+esc(order.warehouse || 'Не указан')+'</td><td>'+esc(order.region || 'Не указан')+'</td>'+
+        '<td>'+esc(order.status.label)+(order.status.at ? '<div class="sub">'+esc(displayDate(order.status.at))+'</div>' : '')+'</td></tr>';
+    }
+    html += '</tbody></table></div></details>';
+  }
+  body.innerHTML = html;
 }
 function renderOrderLookup(data) {
   let html = '<p class="sub">'+esc(data.coverage)+'</p>';
@@ -226,6 +297,15 @@ async function setAvailable(sku, key) {
   catch(e){ alert(e.message); }
 }
 
+const moscowDay = (daysAgo=0) => new Date(Date.now() + 3*3600000 - daysAgo*86400000).toISOString().slice(0,10);
+document.getElementById('fbwDateFrom').value = moscowDay(6);
+document.getElementById('fbwDateTo').value = moscowDay();
+document.getElementById('fbwForm').addEventListener('submit', event => {event.preventDefault(); loadFbwOrders();});
+for (const id of ['fbwDateFrom','fbwDateTo']) document.getElementById(id).addEventListener('input', () => {clearTimeout(fbwTimer); fbwSequence++;});
+document.getElementById('fbwBody').addEventListener('click', event => {
+  const link = event.target.closest('button[data-order-number]');
+  if (link) openFbwOrder(link.dataset.orderNumber);
+});
 document.getElementById('lookupForm').addEventListener('submit', event => {event.preventDefault(); lookupOrder();});
 document.getElementById('orderNumber').addEventListener('input', () => { clearTimeout(lookupTimer); lookupSequence++; });
 document.getElementById('inventorySearch').addEventListener('input',renderInventory);
