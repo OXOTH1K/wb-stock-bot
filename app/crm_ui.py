@@ -416,16 +416,18 @@ async function checkCRMUpdate(force=false) {
     const update=await api('/api/update'+(force?'?force=1':''));
     button.hidden=!update.available;
     if(update.available) {
+      checkButton.hidden=true;
       button.dataset.tag=update.version;
       button.textContent='Установить '+update.version;
       status.textContent='Доступен релиз '+update.version;
       status.hidden=false;
     } else {
+      checkButton.hidden=false;
       button.dataset.tag='';
       status.textContent=update.message || 'Обновлений нет.';
       status.hidden=!force;
     }
-  } catch(e) {button.hidden=true; if(force){status.textContent=e.message;status.hidden=false;} else status.hidden=true;}
+  } catch(e) {button.hidden=true;checkButton.hidden=false;if(force){status.textContent=e.message;status.hidden=false;} else status.hidden=true;}
   finally {checkButton.disabled=false;}
 }
 async function installCRMUpdate() {
