@@ -40,6 +40,17 @@ INDEX_HTML = r"""<!doctype html>
     .notice{padding:10px 12px;border-radius:9px;background:#fff7ed;color:#92400e;font-size:13px;margin-bottom:12px}
     .search{border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:230px}
     .spinner{color:var(--muted);padding:20px}.error{color:var(--bad);padding:16px}
+    [hidden]{display:none!important}
+    .tabs{display:flex;gap:8px;margin-bottom:18px}.tabs button[aria-selected="true"]{background:var(--accent);color:#fff}
+    .lookup-form{padding:18px;display:flex;gap:10px;align-items:end;flex-wrap:wrap}
+    .lookup-form label{display:grid;gap:6px;flex:1;min-width:230px}.lookup-form input{width:100%}
+    .lookup-body{padding:0 18px 18px}.lookup-card{border-top:1px solid var(--line);padding:20px 0}
+    .lookup-card h3{margin:0 0 10px}.lookup-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+    .lookup-grid dt{font-size:12px;color:var(--muted)}.lookup-grid dd{margin:3px 0 0;overflow-wrap:anywhere}
+    .timeline{list-style:none;padding:0 0 0 18px;border-left:2px solid var(--line);margin-left:6px}
+    .timeline li{position:relative;padding:0 0 18px 8px}.timeline li:before{content:'';position:absolute;left:-24px;top:5px;width:10px;height:10px;border-radius:50%;background:#7c3aed}
+    .lookup-card pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:12px;border-radius:8px;font-size:12px}
+    .source-status{font-size:12px;color:var(--muted);margin:8px 0 14px}.lookup-help{margin:0 18px 16px;color:var(--muted);font-size:13px}
     @media(max-width:800px){.shell{padding:14px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:flex-start;flex-direction:column}.panel-head{align-items:flex-start;flex-direction:column}.search{width:100%;min-width:0}}
   </style>
 </head>
@@ -47,10 +58,14 @@ INDEX_HTML = r"""<!doctype html>
 <div class="shell">
   <header>
     <div><h1>CRM склада</h1><div class="sub">Остатки товаров · локальный склад · WB · OZON</div></div>
-    <button class="btn" onclick="loadInventory()">Обновить экран</button>
+    <button class="btn" onclick="refreshView()">Обновить экран</button>
   </header>
 
-  <section id="inventoryView">
+  <nav class="tabs" role="tablist" aria-label="Разделы CRM">
+    <button class="btn" id="inventoryTab" role="tab" aria-controls="inventoryView" aria-selected="true" onclick="showView('inventory')">Остатки</button>
+    <button class="btn" id="lookupTab" role="tab" aria-controls="lookupView" aria-selected="false" onclick="showView('lookup')">Поиск заказа WB</button>
+  </nav>
+  <section id="inventoryView" role="tabpanel" aria-labelledby="inventoryTab">
     <div id="inventoryCards" class="cards"></div>
     <div class="panel">
       <div class="panel-head">
@@ -61,10 +76,79 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </section>
 
+  <section id="lookupView" role="tabpanel" aria-labelledby="lookupTab" hidden>
+    <div class="panel">
+      <div class="panel-head"><div><h2>Найти заказ Wildberries</h2><div class="sub">FBS и FBW · сведения о заказе и его история</div></div></div>
+      <form id="lookupForm" class="lookup-form">
+        <label for="orderNumber">Номер заказа<input id="orderNumber" class="search" required maxlength="200" autocomplete="off" placeholder="ID сборочного задания, rid/srid или gNumber"></label>
+        <button class="btn primary" type="submit">Найти заказ</button>
+      </form>
+      <p class="lookup-help">Поиск по всем заказам, доступным в архиве бота и отчётах WB. Первая загрузка архива может занять несколько минут. Номер из приложения покупателя может отличаться от номера в кабинете продавца.</p>
+      <div id="lookupBody" class="lookup-body" aria-live="polite"><div class="empty">Введите номер, чтобы увидеть сведения о заказе и его путь.</div></div>
+    </div>
+  </section>
 </div>
 
 <script>
 let inventoryRows = [];
+let activeView = 'inventory', lookupSequence = 0, lookupTimer = null;
+function showView(view) {
+  activeView = view;
+  for (const name of ['inventory','lookup']) {
+    document.getElementById(name+'View').hidden = name !== view;
+    document.getElementById(name+'Tab').setAttribute('aria-selected', String(name === view));
+  }
+  if (view === 'lookup') {
+    document.getElementById('orderNumber').focus();
+    if (document.getElementById('orderNumber').value.trim()) lookupOrder();
+  }
+  else { clearTimeout(lookupTimer); lookupSequence++; }
+}
+function refreshView() {
+  if (activeView === 'inventory') loadInventory();
+  else lookupOrder();
+}
+function displayDate(value) {
+  if (!value) return 'Неизвестно';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ru-RU', {timeZoneName:'short'});
+}
+async function lookupOrder(poll=false) {
+  const number = document.getElementById('orderNumber').value.trim();
+  if (!number) { document.getElementById('orderNumber').reportValidity(); return; }
+  const sequence = ++lookupSequence;
+  clearTimeout(lookupTimer);
+  if (!poll) document.getElementById('lookupBody').innerHTML = '<div class="spinner">Ищу заказ…</div>';
+  try {
+    const data = await api('/api/wb/order-lookup?number='+encodeURIComponent(number));
+    if (sequence !== lookupSequence) return;
+    renderOrderLookup(data);
+    if (data.syncing && activeView === 'lookup') lookupTimer = setTimeout(() => lookupOrder(true), 5000);
+  } catch (e) { if (sequence === lookupSequence) setError('lookupBody', e); }
+}
+function renderOrderLookup(data) {
+  let html = '<p class="sub">'+esc(data.coverage)+'</p>';
+  for (const source of data.sources) {
+    html += '<div class="source-status"><strong>'+esc(source.name)+'</strong>: '+
+      esc(source.syncing ? 'загрузка…' : (source.updated_at ? 'обновлено '+displayDate(source.updated_at) : 'ещё не загружен'))+
+      (source.error ? '<div class="notice">'+esc(source.error)+'</div>' : '')+'</div>';
+  }
+  if (!data.items.length) html += '<div class="empty"><strong>'+(data.syncing ? 'Архив загружается' : 'В доступных данных заказ не найден')+'</strong>'+
+    (data.syncing ? 'Результат обновится автоматически.' : (data.partial ? 'Часть источников недоступна. Поиск пока неполный.' : 'Проверьте номер. Более старого заказа или заказа без подтверждённой оплаты может не быть в отчётах WB.'))+'</div>';
+  if (data.items.length > 1) html += '<p>Найдено позиций: '+data.items.length+'. У каждой позиции своя история.</p>';
+  for (const item of data.items) {
+    html += '<article class="lookup-card"><h3>Заказ '+esc(item.order_id || item.srid || data.number)+'</h3>'+
+      '<span class="badge">'+esc(item.model)+'</span> <strong>'+esc(item.status)+'</strong>'+
+      '<div class="sub">'+(item.status_at ? 'Статус проверен: '+esc(displayDate(item.status_at)) : 'Точное текущее местоположение неизвестно')+'</div>';
+    if (item.last_report_event) html += '<p>Последнее событие в отчётах: <strong>'+esc(item.last_report_event.title)+'</strong> · '+esc(displayDate(item.last_report_event.at))+'</p>';
+    const fields = [['Артикул продавца',item.article],['Артикул WB',item.nm_id],['Заказан',displayDate(item.created_at)],['ID сборочного задания',item.order_id],['rid / srid',item.srid],['Номер заказа в отчёте',item.group_number],['Поставка FBS',item.supply_id],['Склад отгрузки (не текущее местоположение)',item.warehouse],['Регион назначения',item.destination]];
+    html += '<dl class="lookup-grid">'+fields.map(([label,value]) => '<div><dt>'+esc(label)+'</dt><dd>'+esc(value || '—')+'</dd></div>').join('')+'</dl>';
+    html += '<h3>Путь заказа</h3><p class="sub">Подтверждённые события и наблюдения бота. Время наблюдения — когда бот увидел статус, а не точное время перехода. Даты отображаются в вашем часовом поясе.</p>';
+    html += item.events.length ? '<ol class="timeline">'+item.events.map(event => '<li><strong>'+esc(event.title)+'</strong><div>'+esc(displayDate(event.at))+(event.observed ? ' · зафиксировано ботом' : '')+'</div><div class="sub">'+esc(event.source)+'</div></li>').join('')+'</ol>' : '<p class="muted">Датированных событий пока нет.</p>';
+    html += '<details><summary>Все полученные данные WB</summary>'+item.raw.map(row => '<h4>'+esc(row.source)+'</h4><div class="sub">Получено: '+esc(displayDate(row.observed_at))+'</div><pre>'+esc(JSON.stringify(row.data,null,2))+'</pre>').join('')+'</details></article>';
+  }
+  document.getElementById('lookupBody').innerHTML = html;
+}
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(url, options={}) {
@@ -142,6 +226,8 @@ async function setAvailable(sku, key) {
   catch(e){ alert(e.message); }
 }
 
+document.getElementById('lookupForm').addEventListener('submit', event => {event.preventDefault(); lookupOrder();});
+document.getElementById('orderNumber').addEventListener('input', () => { clearTimeout(lookupTimer); lookupSequence++; });
 document.getElementById('inventorySearch').addEventListener('input',renderInventory);
 loadInventory();
 </script>

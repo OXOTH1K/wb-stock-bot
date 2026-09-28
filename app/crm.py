@@ -12,6 +12,7 @@ from .config import Settings
 from .crm_ui import INDEX_HTML
 from .db import StateDB
 from .service import StockMonitorService
+from .wb_order_lookup import WBOrderLookup
 
 if TYPE_CHECKING:
     from .shared_inventory import SharedInventoryService
@@ -26,11 +27,13 @@ class CRMServer:
         service: StockMonitorService,
         db: StateDB,
         shared_inventory: "SharedInventoryService | None" = None,
+        order_lookup: WBOrderLookup | None = None,
     ):
         self.settings = settings
         self.service = service
         self.db = db
         self.shared_inventory = shared_inventory
+        self.order_lookup = order_lookup
         try:
             self._allowed_networks = tuple(
                 ipaddress.ip_network(value, strict=False)
@@ -78,6 +81,7 @@ class CRMServer:
                     self.set_available_inventory,
                 ),
                 web.get("/api/inventory/movements", self.inventory_movements),
+                web.get("/api/wb/order-lookup", self.lookup_wb_order),
             ]
         )
 
@@ -122,6 +126,14 @@ class CRMServer:
             content_type="text/html",
             headers={"Cache-Control": "no-store"},
         )
+
+    async def lookup_wb_order(self, request: web.Request) -> web.Response:
+        number = request.query.get("number", "").strip()
+        if not number or len(number) > 200 or any(ord(c) < 32 for c in number):
+            return web.json_response({"error": "Введите номер заказа (до 200 символов)."}, status=400)
+        if self.order_lookup is None:
+            return web.json_response({"error": "Поиск WB-заказов не подключён."}, status=503)
+        return web.json_response(self.order_lookup.search(number), headers={"Cache-Control": "no-store"})
 
     async def health(self, request: web.Request) -> web.Response:
         return web.json_response(
@@ -497,4 +509,3 @@ class CRMServer:
         return web.json_response(
             {"items": self.db.list_inventory_movements(limit)}
         )
-
