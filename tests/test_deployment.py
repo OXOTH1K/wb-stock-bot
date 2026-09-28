@@ -67,3 +67,70 @@ class DeploymentTests(unittest.TestCase):
         with patch.dict(os.environ, {'WB_TOKEN': 'fake', 'TELEGRAM_BOT_TOKEN': 'fake'}, clear=True), patch('app.config.load_dotenv'):
             with self.assertRaisesRegex(RuntimeError, 'CRM_USER'):
                 Settings.from_env()
+
+    def test_custom_https_port_is_preserved_on_redeployment(self):
+        prepare(self.root, 'crm.example.ru', self.stage, 4443)
+        values = dotenv_values(self.stage / '.env', interpolate=False)
+        self.assertEqual(values['CRM_PUBLIC_URL'], 'https://crm.example.ru:4443')
+        self.assertEqual(values['CRM_HTTPS_PORT'], '4443')
+        config = (self.stage / 'wb-stock-bot.caddy').read_text()
+        self.assertIn('https://crm.example.ru:4443 {', config)
+        self.assertIn('header_up Host crm.example.ru:4443', config)
+        self.assertIn('header_up X-Forwarded-Host crm.example.ru:4443', config)
+        self.env.write_text((self.stage / '.env').read_text())
+        prepare(self.root, 'crm.example.ru', self.stage)
+        self.assertEqual((self.stage / 'wb-stock-bot.caddy').read_text(), config)
+
+    def test_invalid_https_ports_and_listener_collision(self):
+        for port in (0, -1, 80, 65536, 8080):
+            with self.assertRaises(ValueError):
+                caddy_config('crm.example.ru', 8080, port)
+
+    def test_selectel_dns_config_and_domain_change(self):
+        prepare(self.root, 'crm.example.ru', self.stage, 4443, 'selectel')
+        config = (self.stage / 'wb-stock-bot.caddy').read_text()
+        self.assertIn('dns selectel {', config)
+        self.assertIn('disable_http_challenge', config)
+        self.assertIn('disable_tlsalpn_challenge', config)
+        self.assertIn('https://acme-v02.api.letsencrypt.org/directory', config)
+        self.env.write_text((self.stage / '.env').read_text())
+        prepare(self.root, 'other.example.ru', self.stage)
+        config = (self.stage / 'wb-stock-bot.caddy').read_text()
+        self.assertIn('https://other.example.ru:4443 {', config)
+        self.assertNotIn('crm.example.ru', config)
+        self.assertIn('dns selectel {', config)
+        with self.assertRaises(ValueError):
+            caddy_config('crm.example.ru', 8080, 4443, 'unknown')
+
+    def test_dns_root_preserves_sites_and_global_options(self):
+        from app.deployment import caddy_root
+        for original in ('', '# comment\n{\n email admin@example.ru\n}\nother.example.ru { respond OK }\n'):
+            rendered = caddy_root(original, True)
+            self.assertIn('auto_https disable_redirects', rendered)
+            self.assertEqual(caddy_root(rendered, True), rendered)
+            if original:
+                self.assertIn('email admin@example.ru', rendered)
+                self.assertIn('other.example.ru { respond OK }', rendered)
+        with self.assertRaises(ValueError):
+            caddy_root('{\n auto_https off\n}\n', True)
+
+    def test_selectel_secrets_are_separate_and_not_executable(self):
+        from app.deployment import prepare_selectel, selectel_credentials
+        secret = self.root / 'selectel.env'
+        secret.write_text("SELECTEL_USER=service\nSELECTEL_PASSWORD='literal-${VAR}-$(id)-password'\n"
+                          'SELECTEL_ACCOUNT_ID=123456\nSELECTEL_PROJECT_NAME=test\n')
+        secret.chmod(0o600)
+        info = secret.stat()
+        root_stat = type('Stat', (), {'st_uid': 0, 'st_mode': info.st_mode})()
+        with patch.object(Path, 'stat', return_value=root_stat):
+            prepare_selectel(secret, self.stage)
+        content = (self.stage / 'selectel.env').read_text()
+        self.assertIn('literal-${VAR}-$(id)-password', content)
+        self.assertEqual((self.stage / 'selectel.env').stat().st_mode & 0o777, 0o600)
+        dropin = (self.stage / 'caddy-selectel.conf').read_text()
+        self.assertNotIn('--environ', dropin)
+        self.assertNotIn('literal-', dropin)
+        self.assertIn('EnvironmentFile=/etc/caddy/wb-crm-selectel.env', dropin)
+        secret.chmod(0o644)
+        with self.assertRaises(ValueError):
+            selectel_credentials(secret)

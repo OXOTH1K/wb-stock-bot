@@ -33,7 +33,8 @@ class CRMPolicyTests(unittest.TestCase):
         validate_crm_settings(settings(crm_enabled=False, crm_user='', crm_password=''))
 
     def test_public_url_and_domain_reject_injection_and_unsafe_bind(self):
-        for value in ('https://crm.example.ru/', 'http://crm.example.ru', 'https://crm.example.ru:8443',
+        for value in ('https://crm.example.ru/', 'http://crm.example.ru', 'https://crm.example.ru:65536', 'https://crm.example.ru:0',
+                      'https://crm.example.ru:foo', 'https://crm.example.ru:04443',
                       'https://user@crm.example.ru', 'https://127.0.0.1', 'https://crm.example.ru/\nfoo'):
             with self.assertRaises(RuntimeError):
                 validate_crm_settings(settings(crm_public_url=value))
@@ -45,6 +46,7 @@ class CRMPolicyTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             validate_crm_settings(settings(crm_public_url='https://crm.example.ru', crm_password='short'))
         validate_crm_settings(settings(crm_public_url='https://crm.example.ru'))
+        validate_crm_settings(settings(crm_public_url='https://crm.example.ru:4443'))
 
     def test_csp_hashes_match_ui_and_inline_handlers_are_removed(self):
         policy = CRMAccessPolicy(settings()).csp
@@ -137,3 +139,18 @@ class CRMSecurityHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("frame-ancestors 'none'", response.headers['Content-Security-Policy'])
         self.assertEqual(response.headers['X-Frame-Options'], 'DENY')
         self.assertNotIn('Access-Control-Allow-Origin', response.headers)
+
+    async def test_custom_https_port_requires_exact_host_and_origin(self):
+        self.crm.security.public_url = 'https://crm.example.ru:4443'
+        headers = self.headers | {'Host': 'crm.example.ru:4443', 'X-Forwarded-Proto': 'https'}
+        self.assertEqual((await self.client.get('/', headers=headers)).status, 200)
+        for host in ('crm.example.ru', 'crm.example.ru:443', 'crm.example.ru:4444'):
+            self.assertEqual((await self.client.get('/', headers=headers | {'Host': host})).status, 403)
+        for origin in ('https://crm.example.ru', 'https://crm.example.ru:4444'):
+            response = await self.client.post('/api/inventory/set', json={'sku': 'SKU', 'quantity': 7},
+                headers=headers | {'Origin': origin})
+            self.assertEqual(response.status, 403)
+        await self.client.get('/api/inventory', headers=headers)
+        response = await self.client.post('/api/inventory/set', json={'sku': 'SKU', 'quantity': 7},
+            headers=headers | {'Origin': 'https://crm.example.ru:4443'})
+        self.assertEqual(response.status, 200)

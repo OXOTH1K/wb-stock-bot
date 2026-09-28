@@ -33,3 +33,16 @@
 - После настройки требуется внешняя проверка сертификата, авторизации, закрытого порта 8080 и всех трёх вкладок на реальном сервере.
 
 Источники: [установка Caddy](https://caddyserver.com/docs/install), [reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy), [бюллетени aiohttp](https://github.com/aio-libs/aiohttp/security/advisories).
+
+### Дополнение: нестандартный HTTPS-порт и Selectel DNS
+
+- Public URL допускает явный порт, но Host/Origin по-прежнему сравниваются полностью;
+  проверены запросы на 4443, отклонение другого порта и легитимное изменение остатков.
+- DNS-01 отключает HTTP/TLS-ALPN challenge и автоматический HTTP redirect listener.
+- Сервисные учётные данные Selectel находятся вне репозитория, root-only; Caddy
+  получает их через EnvironmentFile без печати окружения и без shell `source`.
+- Caddy/xcaddy/DNS-модуль зафиксированы; Go скачивается по HTTPS с проверкой SHA256
+  официального манифеста. Сборка отдельная от APT, обновляется явно через установщик.
+- Проверены 193 Python-теста, тесты UI, синтаксис shell, сборка Caddy и его валидация
+  DNS-only конфигурации. Реальный выпуск/продление сертификата и запуск systemd
+  требуют проверки на сервере с рабочими учётными данными DNS.
