@@ -63,13 +63,13 @@ INDEX_HTML = r"""<!doctype html>
 <div class="shell">
   <header>
     <div><h1>CRM склада</h1><div class="sub">Остатки товаров · локальный склад · WB · OZON</div></div>
-    <button class="btn" onclick="refreshView()">Обновить экран</button>
+    <button class="btn" id="refreshButton">Обновить экран</button>
   </header>
 
   <nav class="tabs" role="tablist" aria-label="Разделы CRM">
-    <button class="btn" id="inventoryTab" role="tab" aria-controls="inventoryView" aria-selected="true" onclick="showView('inventory')">Остатки</button>
-    <button class="btn" id="lookupTab" role="tab" aria-controls="lookupView" aria-selected="false" onclick="showView('lookup')">Поиск заказа WB</button>
-    <button class="btn" id="fbwTab" role="tab" aria-controls="fbwView" aria-selected="false" onclick="showView('fbw')">Заказы FBW</button>
+    <button class="btn" id="inventoryTab" role="tab" aria-controls="inventoryView" aria-selected="true">Остатки</button>
+    <button class="btn" id="lookupTab" role="tab" aria-controls="lookupView" aria-selected="false">Поиск заказа WB</button>
+    <button class="btn" id="fbwTab" role="tab" aria-controls="fbwView" aria-selected="false">Заказы FBW</button>
   </nav>
   <section id="inventoryView" role="tabpanel" aria-labelledby="inventoryTab">
     <div id="inventoryCards" class="cards"></div>
@@ -222,8 +222,14 @@ function renderOrderLookup(data) {
 }
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let csrfPromise = null;
 async function api(url, options={}) {
-  const response = await fetch(url, {headers:{'Content-Type':'application/json', ...(options.headers||{})}, ...options});
+  const headers = {'Content-Type':'application/json', ...(options.headers||{})};
+  if (options.method && !['GET','HEAD'].includes(options.method.toUpperCase())) {
+    if (!csrfPromise) csrfPromise = api('/api/session').catch(error => {csrfPromise=null; throw error;});
+    headers['X-CSRF-Token'] = (await csrfPromise).csrf_token;
+  }
+  const response = await fetch(url, {...options, credentials:'same-origin', headers});
   const text = await response.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = {error:text}; }
@@ -267,14 +273,14 @@ function renderInventory() {
     }
     if (!badges.length) badges.push('<span class="badge ok">синхронно</span>');
     const state = badges.join(' ');
-    const encodedSku = encodeURIComponent(x.sku);
+
     html += '<tr><td><div class="title">'+esc(x.title||'Без названия')+'</div><div class="sku">'+esc(x.sku)+'</div></td>'+
       '<td><div class="stock-edit">'+
       '<input id="qty-'+x.key+'" type="number" min="0" value="'+esc(x.local)+'">'+
-      '<button class="mini" title="Сохранить «Мой склад»" onclick="setStock(decodeURIComponent(\''+encodedSku+'\'),\''+x.key+'\')">✓</button></div></td>'+
+      '<button class="mini" title="Сохранить «Мой склад»" data-stock-action="local" data-sku="'+esc(x.sku)+'" data-key="'+esc(x.key)+'">✓</button></div></td>'+
       '<td><div class="stock-edit">'+
       '<input id="available-'+x.key+'" type="number" min="0" value="'+esc(x.available)+'">'+
-      '<button class="mini" title="Сохранить «Доступно для заказа»" onclick="setAvailable(decodeURIComponent(\''+encodedSku+'\'),\''+x.key+'\')">✓</button></div></td>'+
+      '<button class="mini" title="Сохранить «Доступно для заказа»" data-stock-action="available" data-sku="'+esc(x.sku)+'" data-key="'+esc(x.key)+'">✓</button></div></td>'+
       '<td>'+(x.wb_fbs === null ? '<span class="muted">—</span>' : '<span class="qty">'+esc(x.wb_fbs)+'</span>')+'</td>'+
       '<td>'+(x.wb_warehouses === null ? '<span class="muted">—</span>' : '<span class="qty">'+esc(x.wb_warehouses)+'</span>')+'</td>'+
       '<td>'+(x.ozon_fbs === null ? '<span class="muted">—</span>' : '<span class="qty">'+esc(x.ozon_fbs)+'</span>')+'</td>'+
@@ -297,6 +303,15 @@ async function setAvailable(sku, key) {
   catch(e){ alert(e.message); }
 }
 
+document.getElementById('refreshButton').addEventListener('click', refreshView);
+for (const view of ['inventory','lookup','fbw']) document.getElementById(view+'Tab').addEventListener('click', () => showView(view));
+document.getElementById('inventoryBody').addEventListener('click', event => {
+  const button = event.target.closest('button[data-stock-action]');
+  if (!button) return;
+  const {sku,key,stockAction} = button.dataset;
+  if (stockAction === 'local') setStock(sku,key);
+  else if (stockAction === 'available') setAvailable(sku,key);
+});
 const moscowDay = (daysAgo=0) => new Date(Date.now() + 3*3600000 - daysAgo*86400000).toISOString().slice(0,10);
 document.getElementById('fbwDateFrom').value = moscowDay(6);
 document.getElementById('fbwDateTo').value = moscowDay();

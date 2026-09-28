@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+from .crm_security import validate_crm_settings
 
 
 @dataclass(frozen=True)
@@ -32,10 +33,11 @@ class Settings:
     ozon_warehouse_id: int | None
     telegram_wb_emoji_id: str = ""
     telegram_ozon_emoji_id: str = ""
+    crm_public_url: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
-        load_dotenv()
+        load_dotenv(interpolate=False)
 
         wb_token = os.getenv("WB_TOKEN", "").strip()
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -90,7 +92,7 @@ class Settings:
                 "Non-local CRM_HOST requires CRM_ALLOWED_NETWORKS or CRM_USER/CRM_PASSWORD"
             )
 
-        return cls(
+        settings = cls(
             wb_token=wb_token,
             telegram_bot_token=telegram_bot_token,
             telegram_chat_ids=frozenset(chat_ids),
@@ -107,6 +109,7 @@ class Settings:
             crm_user=crm_user,
             crm_password=crm_password,
             crm_allowed_networks=crm_allowed_networks,
+            crm_public_url=os.getenv("CRM_PUBLIC_URL", "").strip(),
             ozon_client_id=ozon_client_id,
             ozon_api_key=ozon_api_key,
             ozon_order_check_interval=int(
@@ -129,3 +132,5 @@ class Settings:
                 "TELEGRAM_OZON_EMOJI_ID", ""
             ).strip(),
         )
+        validate_crm_settings(settings)
+        return settings

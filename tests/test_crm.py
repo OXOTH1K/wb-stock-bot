@@ -34,12 +34,15 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
             crm_enabled=True,
             crm_host="127.0.0.1",
             crm_port=8080,
-            crm_user="",
-            crm_password="",
+            crm_user="admin",
+            crm_password="test-password",
             crm_allowed_networks=("127.0.0.1/32",),
         )
         self.crm = CRMServer(self.settings, self.service, self.db)
-        self.client = TestClient(TestServer(self.crm.app))
+        self.client = TestClient(TestServer(self.crm.app), headers={
+            'Authorization': 'Basic ' + base64.b64encode(b'admin:test-password').decode(),
+            'X-CSRF-Token': self.crm.security.csrf_token,
+        })
         await self.client.start_server()
 
     async def asyncTearDown(self):

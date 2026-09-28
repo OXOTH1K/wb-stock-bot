@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import base64
 import ipaddress
 import logging
-import secrets
 from typing import Any, TYPE_CHECKING
 
 from aiohttp import web
 
 from .config import Settings
 from .crm_ui import INDEX_HTML
+from .crm_security import CRMAccessPolicy
 from .db import StateDB
 from .service import StockMonitorService
 from .wb_order_lookup import WBOrderLookup
@@ -34,6 +33,7 @@ class CRMServer:
         self.db = db
         self.shared_inventory = shared_inventory
         self.order_lookup = order_lookup
+        self.security = CRMAccessPolicy(settings)
         try:
             self._allowed_networks = tuple(
                 ipaddress.ip_network(value, strict=False)
@@ -50,29 +50,19 @@ class CRMServer:
         ) -> web.StreamResponse:
             if self._allowed_networks and not self._client_ip_allowed(request.remote):
                 raise web.HTTPForbidden(text="CRM access is not allowed from this network")
-            if not (self.settings.crm_user and self.settings.crm_password):
-                return await handler(request)
-            auth = request.headers.get("Authorization", "")
-            if auth.startswith("Basic "):
-                try:
-                    raw = base64.b64decode(auth[6:], validate=True).decode("utf-8")
-                    username, password = raw.split(":", 1)
-                except Exception:
-                    username, password = "", ""
-                if (
-                    secrets.compare_digest(username, self.settings.crm_user)
-                    and secrets.compare_digest(password, self.settings.crm_password)
-                ):
-                    return await handler(request)
-            raise web.HTTPUnauthorized(
-                headers={"WWW-Authenticate": 'Basic realm="WB CRM"'}
-            )
+            self.security.authenticate(request)
+            self.security.check_request(request)
+            return await handler(request)
 
-        self.app = web.Application(middlewares=[auth_middleware])
+        self.app = web.Application(
+            middlewares=[self.security.headers, auth_middleware], client_max_size=16 * 1024,
+            handler_args={"auto_decompress": False},
+        )
         self.app.add_routes(
             [
                 web.get("/", self.index),
                 web.get("/healthz", self.health),
+                web.get("/api/session", self.session),
                 web.get("/api/inventory", self.inventory),
                 web.post("/api/inventory/adjust", self.adjust_inventory),
                 web.post("/api/inventory/set", self.set_inventory),
@@ -159,6 +149,9 @@ class CRMServer:
                 ),
             }
         )
+
+    async def session(self, request: web.Request) -> web.Response:
+        return web.json_response({"csrf_token": self.security.csrf_token})
 
     @staticmethod
     def _sku(nm_id: int, vendor_code: str) -> str:
@@ -348,6 +341,8 @@ class CRMServer:
     async def _payload(self, request: web.Request) -> dict[str, Any]:
         try:
             data = await request.json()
+        except web.HTTPException:
+            raise
         except Exception as exc:
             raise web.HTTPBadRequest(
                 text='{"error":"invalid JSON"}',
@@ -360,6 +355,16 @@ class CRMServer:
             )
         return data
 
+    @staticmethod
+    def _integer(data: dict, key: str, minimum: int = 0) -> int:
+        value = data.get(key)
+        if type(value) is not int or not minimum <= value <= 1_000_000:
+            raise web.HTTPBadRequest(
+                text=web.json_response({"error": f"{key} must be an integer from {minimum} to 1000000"}).text,
+                content_type="application/json",
+            )
+        return value
+
     def _known_skus(self) -> set[str]:
         wb = {
             self._sku(product.nm_id, product.vendor_code)
@@ -371,7 +376,7 @@ class CRMServer:
         data = await self._payload(request)
         sku = str(data.get("sku") or "").strip()
         try:
-            delta = int(data.get("delta"))
+            delta = self._integer(data, "delta", -1_000_000)
         except (TypeError, ValueError) as exc:
             raise web.HTTPBadRequest(
                 text='{"error":"delta must be an integer"}',
@@ -385,8 +390,8 @@ class CRMServer:
         try:
             current = self.db.get_local_stock((sku,)).get(sku, 0)
             target = int(current) + int(delta)
-            if target < 0:
-                raise ValueError("Local stock cannot be negative")
+            if not 0 <= target <= 1_000_000:
+                raise ValueError("Local stock must be between 0 and 1000000")
             if self.shared_inventory is not None:
                 quantity = await self.shared_inventory.set_local_stock(
                     sku, target, reason="crm_adjust"
@@ -418,7 +423,7 @@ class CRMServer:
         data = await self._payload(request)
         sku = str(data.get("sku") or "").strip()
         try:
-            quantity = int(data.get("quantity"))
+            quantity = self._integer(data, "quantity")
         except (TypeError, ValueError) as exc:
             raise web.HTTPBadRequest(
                 text='{"error":"quantity must be an integer"}',
@@ -463,7 +468,7 @@ class CRMServer:
         data = await self._payload(request)
         sku = str(data.get("sku") or "").strip()
         try:
-            quantity = int(data.get("quantity"))
+            quantity = self._integer(data, "quantity")
         except (TypeError, ValueError) as exc:
             raise web.HTTPBadRequest(
                 text='{"error":"quantity must be an integer"}',
