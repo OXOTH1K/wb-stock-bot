@@ -15,6 +15,7 @@ from .service import StockMonitorService
 from .shared_inventory import SharedInventoryService
 from .telegram import TelegramBot
 from .wb_client import WildberriesClient
+from .wb_order_lookup import WBOrderLookup
 
 
 async def wait_for_shutdown(stop_event, tasks):
@@ -115,11 +116,13 @@ async def amain() -> None:
                         "Ozon initial order sync failed; background loop will retry"
                     )
 
+            order_lookup = WBOrderLookup(wb, db)
             crm = CRMServer(
                 settings,
                 service,
                 db,
                 shared_inventory=shared_inventory,
+                order_lookup=order_lookup,
             )
             await crm.start()
 
@@ -269,6 +272,8 @@ async def amain() -> None:
                     name="shared-inventory",
                 ),
             ]
+            if settings.crm_enabled:
+                tasks.append(asyncio.create_task(order_lookup.loop(), name="wb-order-archive"))
             if ozon is not None:
                 tasks.extend(
                     [

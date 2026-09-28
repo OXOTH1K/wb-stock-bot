@@ -123,6 +123,7 @@ class OrderMonitor:
         data = await self.wb._json(
             "GET", f"{self.wb.MARKETPLACE_BASE}/api/v3/orders/new"
         )
+        self.db.archive_wb_orders("fbs", (data or {}).get("orders", []))
         return [
             self._parse_order(row)
             for row in (data or {}).get("orders", [])
@@ -151,6 +152,7 @@ class OrderMonitor:
                 },
             )
             rows = (data or {}).get("orders", [])
+            self.db.archive_wb_orders("fbs", rows)
             result.extend(
                 row
                 for row in rows

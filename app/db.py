@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,6 +188,31 @@ class StateDB:
             )
             """
         )
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS wb_order_archive (
+                source TEXT NOT NULL,
+                record_id TEXT NOT NULL,
+                link_id TEXT NOT NULL DEFAULT '',
+                group_number TEXT NOT NULL DEFAULT '',
+                payload TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY (source, record_id)
+            );
+            CREATE INDEX IF NOT EXISTS wb_order_archive_link ON wb_order_archive(link_id);
+            CREATE INDEX IF NOT EXISTS wb_order_archive_group ON wb_order_archive(group_number);
+            CREATE INDEX IF NOT EXISTS wb_order_archive_id ON wb_order_archive(record_id);
+            CREATE TABLE IF NOT EXISTS wb_order_status_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
+                supplier_status TEXT NOT NULL,
+                wb_status TEXT NOT NULL,
+                observed_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS wb_order_history_order ON wb_order_status_history(order_id);
+            INSERT INTO wb_order_status_history(order_id, supplier_status, wb_status, observed_at)
+            SELECT order_id, supplier_status, wb_status, updated_at FROM crm_order_status AS s
+            WHERE NOT EXISTS (SELECT 1 FROM wb_order_status_history AS h WHERE h.order_id = s.order_id);
+        """)
         self.conn.commit()
 
     def get(self, source: str, nm_id: int) -> int | None:
@@ -1150,6 +1176,15 @@ class StateDB:
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self.conn:
+            previous = self.conn.execute(
+                "SELECT supplier_status, wb_status FROM crm_order_status WHERE order_id = ?",
+                (int(order_id),),
+            ).fetchone()
+            if previous != (str(supplier_status), str(wb_status or "")):
+                self.conn.execute(
+                    "INSERT INTO wb_order_status_history(order_id, supplier_status, wb_status, observed_at) VALUES (?, ?, ?, ?)",
+                    (int(order_id), str(supplier_status), str(wb_status or ""), now),
+                )
             self.conn.execute(
                 """
                 INSERT INTO crm_order_status(
@@ -1168,6 +1203,31 @@ class StateDB:
                     now,
                 ),
             )
+
+    def archive_wb_orders(self, source: str, rows: list[dict]) -> None:
+        """Keep read-only WB snapshots separately from stock/sale accounting."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            for row in rows:
+                link = str(row.get("rid" if source == "fbs" else "srid") or "")
+                key = str(row.get("id" if source == "fbs" else "saleID") or link)
+                if not key:
+                    continue
+                previous = self.conn.execute(
+                    "SELECT payload FROM wb_order_archive WHERE source=? AND record_id=?",
+                    (source, key),
+                ).fetchone()
+                if previous:
+                    row = json.loads(previous[0]) | row
+                    link = str(row.get("rid" if source == "fbs" else "srid") or "")
+                self.conn.execute(
+                    """INSERT INTO wb_order_archive VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source, record_id) DO UPDATE SET
+                        link_id=excluded.link_id, group_number=excluded.group_number,
+                        payload=excluded.payload, observed_at=excluded.observed_at""",
+                    (source, key, link, str(row.get("gNumber") or ""),
+                     json.dumps(row, ensure_ascii=False), now),
+                )
 
     def set_order_assembled(self, order_id: int, assembled: bool) -> None:
         now = datetime.now(timezone.utc).isoformat()

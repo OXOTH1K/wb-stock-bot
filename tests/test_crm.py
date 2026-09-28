@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -198,10 +199,26 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get("/api/orders/wb")).status, 404)
         self.assertEqual((await self.client.get("/api/orders/ozon")).status, 404)
 
-    def test_inventory_only_ui_layout(self):
+    async def test_lookup_validates_input_and_disables_http_cache(self):
+        lookup = Mock()
+        lookup.search.return_value = {"items": [], "partial": True}
+        self.crm.order_lookup = lookup
+        for number in ("", "x" * 201, "abc\n123"):
+            response = await self.client.get("/api/wb/order-lookup", params={"number": number})
+            self.assertEqual(response.status, 400)
+        lookup.search.assert_not_called()
+        response = await self.client.get("/api/wb/order-lookup", params={"number": " abc.123 "})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        lookup.search.assert_called_once_with("abc.123")
+
+    def test_inventory_and_lookup_ui_layout(self):
         self.assertNotIn("WB заказы", INDEX_HTML)
         self.assertNotIn("OZON заказы", INDEX_HTML)
-        self.assertNotIn('class="tabs"', INDEX_HTML)
+        self.assertIn('class="tabs"', INDEX_HTML)
+        self.assertIn('id="lookupView"', INDEX_HTML)
+        self.assertIn('id="lookupForm"', INDEX_HTML)
+        self.assertIn('Путь заказа', INDEX_HTML)
         self.assertNotIn("adjustStock(", INDEX_HTML)
         self.assertNotIn(">−1<", INDEX_HTML)
         self.assertNotIn(">+1<", INDEX_HTML)
@@ -228,6 +245,9 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.crm._client_ip_allowed("127.0.0.1"))
         self.assertFalse(self.crm._client_ip_allowed("192.168.2.25"))
         self.assertFalse(self.crm._client_ip_allowed("10.0.0.5"))
+        self.crm._allowed_networks = (__import__("ipaddress").ip_network("192.168.1.0/24"),)
+        response = await self.client.get("/api/wb/order-lookup?number=123")
+        self.assertEqual(response.status, 403)
 
 
 class CRMAuthTests(unittest.IsolatedAsyncioTestCase):
@@ -252,6 +272,8 @@ class CRMAuthTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def test_basic_auth_protects_crm(self):
+        response = await self.client.get("/api/wb/order-lookup?number=123")
+        self.assertEqual(response.status, 401)
         response = await self.client.get("/healthz")
         self.assertEqual(response.status, 401)
 
