@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 URL = 'https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed'
 FIELDS = ['rrdId', 'rrDate', 'nmId', 'vendorCode', 'title', 'currency', 'docTypeName',
           'sellerOperName', 'quantity', 'returnAmount', 'forPay']
+CACHE_VERSION = 'returns-v2'
 
 
 def period(start: str, end: str) -> tuple[date, date]:
@@ -114,7 +115,7 @@ class WBSalesAnalytics:
         a, b = period(start, end)
         if len(sku) > 200 or any(ord(c) < 32 for c in sku):
             raise ValueError('Некорректный артикул.')
-        key = start + ':' + end
+        key = CACHE_VERSION + ':' + start + ':' + end
         record = self.db.conn.execute('SELECT updated, payload FROM crm_finance_cache WHERE period=?', (key,)).fetchone()
         now = time.time()
         error, retry_at = self.errors.get(key, ('', 0))
@@ -169,7 +170,7 @@ class WBSalesAnalytics:
         payload = await asyncio.to_thread(aggregate, rows, start, end, dict(self.products()))
         with self.db.conn:
             self.db.conn.execute('INSERT OR REPLACE INTO crm_finance_cache VALUES (?, ?, ?)',
-                                 (start + ':' + end, time.time(), json.dumps(payload, ensure_ascii=False)))
+                                 (CACHE_VERSION + ':' + start + ':' + end, time.time(), json.dumps(payload, ensure_ascii=False)))
             self.db.conn.execute('DELETE FROM crm_finance_cache WHERE period NOT IN (SELECT period FROM crm_finance_cache ORDER BY updated DESC LIMIT 12)')
 
     async def loop(self):
