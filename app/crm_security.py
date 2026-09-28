@@ -40,13 +40,17 @@ def validate_crm_settings(settings) -> None:
         raise RuntimeError('Invalid CRM_PORT')
     public_url = getattr(settings, 'crm_public_url', '')
     if public_url:
-        parts = urlsplit(public_url)
         try:
-            domain = validate_domain(parts.netloc)
+            parts = urlsplit(public_url)
+            domain = validate_domain(parts.hostname or '')
+            port = parts.port
+            if port is not None and not 1 <= port <= 65535:
+                raise ValueError('Invalid public HTTPS port')
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
-        if public_url != f'https://{domain}':
-            raise RuntimeError('CRM_PUBLIC_URL must be https://domain without a trailing slash')
+        authority = domain if port is None else f'{domain}:{port}'
+        if public_url != f'https://{authority}':
+            raise RuntimeError('CRM_PUBLIC_URL must be https://domain[:port] without a trailing slash')
         if settings.crm_host != '127.0.0.1':
             raise RuntimeError('Public CRM must listen only on 127.0.0.1 behind Caddy')
         if len(settings.crm_password) < 20:

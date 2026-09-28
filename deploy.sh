@@ -45,6 +45,10 @@ OLD_REV="$(sudo -u "$APP_USER" git rev-parse HEAD)"
 STAGE="$(mktemp -d /tmp/wb-stock-deploy.XXXXXX)"
 CADDY_ROOT=/etc/caddy/Caddyfile
 CADDY_SITE=/etc/caddy/wb-stock-bot.caddy
+CADDY_CUSTOM=/usr/local/lib/wb-stock-bot/caddy
+CADDY_DROPIN=/etc/systemd/system/caddy.service.d/wb-crm-selectel.conf
+CADDY_ENV=/etc/caddy/wb-crm-selectel.env
+CADDY_DNS_CHANGED=0
 DROPIN="/etc/systemd/system/$SERVICE.service.d/crm-security.conf"
 APP_CHANGED=0
 CONFIG_CHANGED=0
@@ -72,6 +76,16 @@ cleanup() {
       restore_file "$CADDY_ROOT" caddy.old
       restore_file "$CADDY_SITE" site.old
       restore_file "$DROPIN" dropin.old
+      if [[ $CADDY_DNS_CHANGED == 1 ]]; then
+        if [[ -f "$STAGE/binary.old" ]]; then
+          cp -p "$STAGE/binary.old" "$CADDY_CUSTOM.rollback"
+          mv -f "$CADDY_CUSTOM.rollback" "$CADDY_CUSTOM"
+        else
+          rm -f "$CADDY_CUSTOM"
+        fi
+        restore_file "$CADDY_DROPIN" caddy-dropin.old
+        restore_file "$CADDY_ENV" caddy-env.old
+      fi
       systemctl daemon-reload || true
     fi
     if [[ $APP_CHANGED == 1 ]]; then
@@ -81,7 +95,7 @@ cleanup() {
     if [[ $CADDY_NEW == 1 ]]; then
       systemctl disable --now caddy || true
     elif [[ $CONFIG_CHANGED == 1 && $CADDY_WAS_ACTIVE == 1 ]]; then
-      systemctl reload caddy || true
+      if [[ $CADDY_DNS_CHANGED == 1 ]]; then systemctl restart caddy || true; else systemctl reload caddy || true; fi
     elif [[ $CONFIG_CHANGED == 1 ]]; then
       systemctl stop caddy || true
     fi
@@ -101,6 +115,13 @@ sudo -u "$APP_USER" "$PYTHON" -m pip install --upgrade --upgrade-strategy eager 
 if [[ $SETUP_CADDY == 1 ]]; then
   # Render first. Missing auth/domain or invalid paths must fail before installing or publishing anything.
   "$PYTHON" -m app.deployment prepare-caddy --domain "$CRM_DOMAIN" --app-dir "$APP_DIR" --stage "$STAGE"
+  CRM_HTTPS_PORT="$(cat "$STAGE/https-port")"
+  CRM_PUBLIC_URL="$(cat "$STAGE/public-url")"
+  CRM_DNS_PROVIDER="$(cat "$STAGE/dns-provider")"
+  if [[ $CRM_DNS_PROVIDER == selectel ]]; then
+    "$PYTHON" -m app.deployment prepare-selectel --stage "$STAGE"
+  fi
+  "$PYTHON" -m app.deployment caddy-root --dns-provider "$CRM_DNS_PROVIDER" --stage "$STAGE"
 else
   "$PYTHON" -m app.deployment validate --app-dir "$APP_DIR"
 fi
@@ -120,12 +141,14 @@ if [[ $SETUP_CADDY == 1 ]]; then
   if ! command -v caddy >/dev/null; then
     # Do not replace another web server or change its firewall rules.
     if ! command -v ss >/dev/null; then
-      echo 'Install iproute2 (ss) to check whether ports 80/443 are free.' >&2
+      echo "Install iproute2 (ss) to check whether ports 80/$CRM_HTTPS_PORT are free." >&2
       exit 1
     fi
-    LISTENERS="$(ss -ltnH '( sport = :80 or sport = :443 )')"
+    PORT_FILTER="( sport = :80 or sport = :$CRM_HTTPS_PORT )"
+    if [[ $CRM_DNS_PROVIDER == selectel ]]; then PORT_FILTER="( sport = :$CRM_HTTPS_PORT )"; fi
+    LISTENERS="$(ss -ltnH "$PORT_FILTER")"
     if [[ -n "$LISTENERS" ]]; then
-      echo 'Ports 80/443 are already in use. Configure the existing web server first.' >&2
+      echo "Required listener is already in use: $PORT_FILTER. Configure the existing web server first." >&2
       exit 1
     fi
     CADDY_NEW=1
@@ -142,16 +165,34 @@ if [[ $SETUP_CADDY == 1 ]]; then
     apt-get install -y caddy
     systemctl stop caddy
   fi
+  CADDY_BIN="$(command -v caddy)"
+  if [[ $CRM_DNS_PROVIDER == selectel ]]; then
+    backup_file "$CADDY_CUSTOM" binary.old
+    backup_file "$CADDY_DROPIN" caddy-dropin.old
+    backup_file "$CADDY_ENV" caddy-env.old
+    if [[ ${CRM_REBUILD_CADDY:-0} != 1 && -x "$CADDY_CUSTOM" ]] && "$CADDY_CUSTOM" list-modules | grep -Fx 'dns.providers.selectel' >/dev/null; then
+      cp "$CADDY_CUSTOM" "$STAGE/caddy"
+    else
+      bash "$APP_DIR/scripts/build-caddy-selectel.sh" "$STAGE" "$PYTHON"
+    fi
+    CADDY_BIN="$STAGE/caddy"
+  elif [[ -f "$CADDY_DROPIN" ]]; then
+    CADDY_BIN="$CADDY_CUSTOM"
+  fi
   install -d -m 0755 /etc/caddy "$(dirname "$DROPIN")"
   CONFIG_CHANGED=1
   install -m 0644 "$STAGE/wb-stock-bot.caddy" "$CADDY_SITE"
-  if [[ $CADDY_NEW == 1 || ! -f "$CADDY_ROOT" ]]; then
-    printf 'import /etc/caddy/wb-stock-bot.caddy\n' > "$CADDY_ROOT"
-  elif ! grep -Fxq 'import /etc/caddy/wb-stock-bot.caddy' "$CADDY_ROOT"; then
-    printf '\nimport /etc/caddy/wb-stock-bot.caddy\n' >> "$CADDY_ROOT"
+  install -m 0644 "$STAGE/Caddyfile" "$CADDY_ROOT"
+  "$PYTHON" -m app.deployment validate-caddy --caddy-bin "$CADDY_BIN" --dns-provider "$CRM_DNS_PROVIDER"
+  if [[ $CRM_DNS_PROVIDER == selectel ]]; then
+    CADDY_DNS_CHANGED=1
+    install -d -m 0755 "$(dirname "$CADDY_CUSTOM")" "$(dirname "$CADDY_DROPIN")"
+    # Replace via rename: never truncate a currently running executable.
+    install -o root -g root -m 0755 "$STAGE/caddy" "$CADDY_CUSTOM.new"
+    mv -f "$CADDY_CUSTOM.new" "$CADDY_CUSTOM"
+    install -o root -g root -m 0600 "$STAGE/selectel.env" "$CADDY_ENV"
+    install -m 0644 "$STAGE/caddy-selectel.conf" "$CADDY_DROPIN"
   fi
-  chmod 0644 "$CADDY_ROOT"
-  caddy validate --config "$CADDY_ROOT" --adapter caddyfile
   install -o root -g "$APP_GROUP" -m 0640 "$STAGE/.env" "$APP_DIR/.env"
   install -d -o "$APP_USER" -g "$APP_GROUP" -m 0700 "$APP_DIR/data"
   install -m 0644 "$STAGE/crm-security.conf" "$DROPIN"
@@ -175,9 +216,16 @@ fi
 systemctl is-active --quiet "$SERVICE"
 if [[ $SETUP_CADDY == 1 ]]; then
   systemctl enable caddy
-  if systemctl is-active --quiet caddy; then systemctl reload caddy; else systemctl start caddy; fi
+  if [[ $CADDY_DNS_CHANGED == 1 ]]; then
+    systemctl restart caddy
+  elif systemctl is-active --quiet caddy; then systemctl reload caddy; else systemctl start caddy; fi
   systemctl is-active --quiet caddy
-  echo "Caddy configured for https://$CRM_DOMAIN. DNS must point here and TCP 80/443 must reach this server."
+  if [[ $CRM_DNS_PROVIDER == selectel ]]; then
+    echo "Caddy configured for $CRM_PUBLIC_URL. Forward TCP $CRM_HTTPS_PORT; certificates use Selectel DNS, not inbound 80/443."
+  else
+    echo "Caddy configured for $CRM_PUBLIC_URL. DNS must point here; TCP 80 is required for Let's Encrypt and TCP $CRM_HTTPS_PORT for CRM."
+  fi
+  echo 'Certificate issuance is asynchronous; check journalctl -u caddy and HTTPS from outside.'
 fi
 systemctl --no-pager --full status "$SERVICE"
 SUCCESS=1
