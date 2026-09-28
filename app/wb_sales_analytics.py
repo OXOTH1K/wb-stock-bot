@@ -13,7 +13,7 @@ from .wb_order_lookup import MSK
 log = logging.getLogger(__name__)
 URL = 'https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed'
 FIELDS = ['rrdId', 'rrDate', 'nmId', 'vendorCode', 'title', 'currency', 'docTypeName',
-          'sellerOperName', 'quantity', 'forPay']
+          'sellerOperName', 'quantity', 'returnAmount', 'forPay']
 
 
 def period(start: str, end: str) -> tuple[date, date]:
@@ -53,9 +53,15 @@ def amounts(row):
     quantity = money(row, 'quantity')
     if quantity < 0 or quantity != quantity.to_integral_value():
         raise ValueError('Некорректное количество в финансовом отчёте WB.')
-    operation = row.get('sellerOperName')
-    sold = int(quantity) if operation == 'Продажа' else 0
-    returned = int(quantity) if operation == 'Возврат' else 0
+    operation = str(row.get('sellerOperName') or '').strip()
+    return_amount = money(row, 'returnAmount') if row.get('returnAmount') is not None else Decimal(0)
+    if return_amount < 0 or return_amount != return_amount.to_integral_value():
+        raise ValueError('Некорректное количество возвратов в финансовом отчёте WB.')
+    # WB may report a return in either the operation/quantity pair or the
+    # explicit returnAmount field. Prefer the larger value so a zero/missing
+    # legacy field cannot hide a return from the daily totals.
+    returned = max(int(return_amount), int(quantity) if operation == 'Возврат' or doc == 'Возврат' else 0)
+    sold = int(quantity) if operation == 'Продажа' and doc != 'Возврат' and not returned else 0
     return sold, returned, credit
 
 

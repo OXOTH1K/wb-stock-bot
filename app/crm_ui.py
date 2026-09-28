@@ -57,9 +57,9 @@ INDEX_HTML = r"""<!doctype html>
     .lookup-card pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:12px;border-radius:8px;font-size:12px}
     .source-status{font-size:12px;color:var(--muted);margin:8px 0 14px}.lookup-help{margin:0 18px 16px;color:var(--muted);font-size:13px}
     @media(max-width:800px){.shell{padding:14px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:flex-start;flex-direction:column}.panel-head{align-items:flex-start;flex-direction:column}.search{width:100%;min-width:0}}
-    .chart-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,#fafaff,#fff);padding:12px 0}.sales-chart{width:auto;min-width:700px;height:auto;display:block}.sales-chart text{fill:var(--muted);font-size:12px}
+    .chart-wrap{width:100%;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,#fafaff,#fff);padding:12px 0}.sales-chart{width:100%;height:auto;display:block}.sales-chart text{fill:var(--muted);font-size:12px}
     .chart-grid{stroke:var(--line)}.chart-zero{stroke:#16a085;stroke-dasharray:4 4}.chart-bar{fill:url(#salesBarGradient)}
-    .chart-money{stroke:#087f5b;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;fill:none}.chart-dot{fill:#fff;stroke:#087f5b;stroke-width:2}.chart-area{fill:url(#salesAreaGradient)}.sales-chart .chart-qty-label{fill:#7c3aed;font-weight:650}.sales-chart .chart-cash-label{fill:#087f5b;font-weight:650}.chart-day-divider{stroke:#edf0f5}.chart-hit{fill:transparent;cursor:crosshair}
+    .chart-money{stroke:#087f5b;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;fill:none}.chart-dot{fill:#fff;stroke:#087f5b;stroke-width:2}.chart-area{fill:url(#salesAreaGradient)}.chart-hit{fill:transparent;cursor:crosshair}
     .chart-hit:focus{stroke:#087f5b;stroke-width:2}.chart-legend{display:flex;gap:20px;flex-wrap:wrap}.chart-legend span:first-child{color:#7c3aed}.chart-legend span:last-child{color:#087f5b}
     .analytics-summary .card span{display:block;color:var(--muted);font-size:13px;margin-bottom:8px}.analytics-summary .card strong{display:block;font-size:24px}
     .detail-toolbar{padding:18px}.lookup-form select{width:100%;min-height:40px}
@@ -262,8 +262,7 @@ function salesChart(allPoints) {
   if (first<0) return '<div class="empty"><strong>Нет данных для графика</strong>За выбранный период в загруженном отчёте нет ненулевых продаж, возвратов или начислений. Нулевой график скрыт.</div>';
   const points=allPoints.slice(first);
   const notice=first ? '<div class="notice">Начало периода '+esc(allPoints[0].date)+' — '+esc(allPoints[first-1].date)+': в загруженном отчёте нет продаж, возвратов и начислений. Эти дни скрыты на графике. Данные начинаются с '+esc(points[0].date)+'.</div>' : '';
-  const dayWidth=Math.max(84,...points.map(p=>rubles(p.net).length*6+18),...points.map(p=>String(p.sales+' шт.').length*6+18));
-  const left=70, width=Math.max(660,points.length*dayWidth), right=left+width, svgWidth=right+118;
+  const left=70, width=760, right=left+width, svgWidth=960;
   const top=36, bottom=248, height=bottom-top;
   const qtyMax=Math.max(4,Math.ceil(Math.max(...points.map(p=>p.sales))/4)*4);
   const cash=points.map(p=>Number(p.net));
@@ -273,7 +272,7 @@ function salesChart(allPoints) {
   const x=i=>left+(i+0.5)*width/points.length;
   const yQty=v=>bottom-v/qtyMax*height;
   const yCash=v=>bottom-(v-cashMin)/(cashMax-cashMin)*height;
-  let svg='<svg viewBox="0 0 '+svgWidth+' 390" width="'+svgWidth+'" height="390" class="sales-chart" role="img" aria-label="Продажи и начисления по дням: количество слева, рубли справа">'+
+  let svg='<svg viewBox="0 0 '+svgWidth+' 390" class="sales-chart" role="img" aria-label="Продажи и начисления по дням: количество слева, рубли справа">'+
     '<defs><linearGradient id="salesBarGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#a78bfa"/><stop offset="100%" stop-color="#7c3aed"/></linearGradient><linearGradient id="salesAreaGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#10b981" stop-opacity="0.16"/><stop offset="100%" stop-color="#10b981" stop-opacity="0.02"/></linearGradient></defs>'+
     '<text x="16" y="20">Шт.</text><text x="'+(right+16)+'" y="20">Рубли</text>';
   for (let i=0;i<=4;i++) {
@@ -287,16 +286,16 @@ function salesChart(allPoints) {
   svg+='<line class="chart-zero" x1="'+left+'" x2="'+right+'" y1="'+yCash(0)+'" y2="'+yCash(0)+'"/>';
   points.forEach((p,i)=>{const bar=Math.min(24,width/points.length*0.34);svg+='<rect class="chart-bar" rx="5" x="'+(x(i)-bar/2)+'" y="'+yQty(p.sales)+'" width="'+bar+'" height="'+(bottom-yQty(p.sales))+'"/>';});
   svg+='<path class="chart-money" d="'+path+'"/>';
+  const dateLabelCount=Math.min(8,points.length);
+  const dateLabels=new Set(Array.from({length:dateLabelCount},(_,label)=>
+    dateLabelCount===1 ? 0 : Math.round(label*(points.length-1)/(dateLabelCount-1))));
   points.forEach((p,i)=>{
     const tip=p.date+' · Продано: '+p.sales+' · Возвраты: '+p.returns+' · К перечислению: '+rubles(p.net);
     svg+='<circle class="chart-dot" cx="'+x(i)+'" cy="'+yCash(Number(p.net))+'" r="4"/>';
-    svg+='<line class="chart-day-divider" x1="'+(left+i*width/points.length)+'" x2="'+(left+i*width/points.length)+'" y1="297" y2="371"/>';
-    svg+='<text text-anchor="middle" x="'+x(i)+'" y="314">'+esc(p.date.slice(5).split('-').reverse().join('.'))+'</text>'+
-      '<text class="chart-qty-label" text-anchor="middle" x="'+x(i)+'" y="337">'+esc(p.sales)+' шт.</text>'+
-      '<text class="chart-cash-label" text-anchor="middle" x="'+x(i)+'" y="360">'+esc(rubles(p.net))+'</text>';
+    if (dateLabels.has(i)) svg+='<text text-anchor="middle" x="'+x(i)+'" y="314">'+esc(p.date.slice(5).split('-').reverse().join('.'))+'</text>';
     svg+='<rect tabindex="0" class="chart-hit" data-chart-tip="'+esc(tip)+'" aria-label="'+esc(tip)+'" x="'+(left+i*width/points.length)+'" y="'+top+'" width="'+width/points.length+'" height="335"><title>'+esc(tip)+'</title></rect>';
   });
-  return notice+'<p class="chart-legend"><span>■ Продано, шт. — левая шкала</span><span>━ К перечислению, ₽ — правая шкала</span></p><p class="sub">Под каждой датой — продажи и начисление за этот день. Длинный график можно прокручивать горизонтально.</p><div class="chart-wrap">'+svg+'</svg></div><p id="chartTooltip" class="sub" aria-live="polite">Наведите курсор, нажмите на день или выберите его клавишей Tab. Плавная линия соединяет дневные значения.</p>';
+  return notice+'<p class="chart-legend"><span>■ Продано, шт. — левая шкала</span><span>━ К перечислению, ₽ — правая шкала</span></p><div class="chart-wrap">'+svg+'</svg></div><p id="chartTooltip" class="sub" aria-live="polite">Наведите курсор на день, нажмите на него или выберите клавишей Tab, чтобы увидеть продажи, возвраты и начисление. Плавная линия соединяет дневные значения.</p>';
 }
 
 async function loadFbwOrders(poll=false) {

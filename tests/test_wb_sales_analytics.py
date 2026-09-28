@@ -29,6 +29,11 @@ class CalculationTests(unittest.TestCase):
         result = aggregate([sold, refund], '2026-09-20', '2026-09-21', {})
         self.assertEqual(result['SKU']['days']['2026-09-20'], [1, 1, '0.00'])
 
+    def test_explicit_return_amount_is_counted_even_when_operation_name_is_ambiguous(self):
+        refund = row(docTypeName='Возврат', sellerOperName='Продажа', quantity=0,
+                     returnAmount=1, forPay='80.10')
+        self.assertEqual(amounts(refund), (0, 1, Decimal('-80.10')))
+
     def test_compensation_is_not_a_sale_and_negative_adjustments_remain_signed(self):
         self.assertEqual(amounts(row(sellerOperName='Компенсация ущерба')), (0, 0, Decimal('100.01')))
         self.assertEqual(amounts(row(forPay='-12.50', sellerOperName='Коррекция продаж')), (0, 0, Decimal('-12.50')))
@@ -75,6 +80,7 @@ class FinanceLoadingTests(unittest.IsolatedAsyncioTestCase):
         calls = self.wb._json.call_args_list
         self.assertEqual(calls[1].kwargs['json']['rrdId'], 9007199254740993)
         self.assertEqual(calls[0].kwargs['json']['period'], 'weekly')
+        self.assertIn('returnAmount', calls[0].kwargs['json']['fields'])
         self.assertEqual(calls[0].kwargs['token'], 'finance-test-token')
         data = self.service.view('2026-09-20','2026-09-22','SKU')
         self.assertTrue(data['ready'])

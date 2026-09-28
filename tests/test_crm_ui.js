@@ -2,7 +2,8 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync('app/crm_ui.py', 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+const page = fs.readFileSync('app/crm_ui.py', 'utf8');
+const source = page.match(/<script>([\s\S]*?)<\/script>/)[1];
 const nodes = new Map();
 function element(id) {
   if (!nodes.has(id)) nodes.set(id, {value:'', innerHTML:'', hidden:false, attributes:{}, listeners:{},
@@ -150,10 +151,12 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.match(chart,/2026-09-18 — 2026-09-19/);
   assert.match(chart,/Данные начинаются с 2026-09-20/);
   assert.equal((chart.match(/data-chart-tip=/g)||[]).length,2);
-  assert.equal((chart.match(/class="chart-qty-label"/g)||[]).length,2);
-  assert.equal((chart.match(/class="chart-cash-label"/g)||[]).length,2);
+  assert.doesNotMatch(chart,/chart-qty-label|chart-cash-label/);
+  assert.match(chart,/Возвраты: 0/);
+  assert.match(chart,/Продано: 2/);
   assert.match(chart,/12,34/);
   assert.match(chart,/>21.09<\/text>/);
+  assert.match(chart,/viewBox="0 0 960 390"/);
   assert.match(chart,/<path class="chart-money" d="M [^"]* C /);
   context.points=[{...quiet,date:'2026-09-20'}];
   chart=vm.runInContext('salesChart(points)',context);
@@ -169,8 +172,11 @@ assert.equal(element('inventorySearch').value, 'existing search');
     'M 0 0 C 1 0, 2 30, 3 30 C 4 30, 5 0, 6 0');
   context.points=Array.from({length:100},(_,i)=>({date:'2026-09-20',sales:i+1,returns:0,net:'1.00'}));
   chart=vm.runInContext('salesChart(points)',context);
-  assert.equal((chart.match(/class="chart-cash-label"/g)||[]).length,100);
-  assert.match(chart,/width="8588"/);
+  assert.equal((chart.match(/data-chart-tip=/g)||[]).length,100);
+  assert.equal((chart.match(/<text text-anchor="middle"/g)||[]).length,8);
+  assert.doesNotMatch(chart,/chart-qty-label|chart-cash-label/);
+  assert.match(page,/\.chart-wrap\{width:100%;overflow:hidden/);
+  assert.match(page,/\.sales-chart\{width:100%;height:auto/);
 
   element('analyticsDateFrom').value='2026-09-20'; element('analyticsDateTo').value='2026-09-21'; element('analyticsSku').value='SKU';
   context.fetch=()=>new Promise(resolve=>{finishFirst=resolve;});
