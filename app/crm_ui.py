@@ -57,7 +57,7 @@ INDEX_HTML = r"""<!doctype html>
     .lookup-card pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:12px;border-radius:8px;font-size:12px}
     .source-status{font-size:12px;color:var(--muted);margin:8px 0 14px}.lookup-help{margin:0 18px 16px;color:var(--muted);font-size:13px}
     @media(max-width:800px){.shell{padding:14px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:flex-start;flex-direction:column}.panel-head{align-items:flex-start;flex-direction:column}.search{width:100%;min-width:0}}
-    .chart-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,#fafaff,#fff);padding:12px 0}.sales-chart{width:auto;min-width:100%;height:auto;display:block}.sales-chart text{fill:var(--muted);font-size:12px}
+    .chart-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,#fafaff,#fff);padding:12px 0}.sales-chart{width:auto;min-width:700px;height:auto;display:block}.sales-chart text{fill:var(--muted);font-size:12px}
     .chart-grid{stroke:var(--line)}.chart-zero{stroke:#16a085;stroke-dasharray:4 4}.chart-bar{fill:url(#salesBarGradient)}
     .chart-money{stroke:#087f5b;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;fill:none}.chart-dot{fill:#fff;stroke:#087f5b;stroke-width:2}.chart-area{fill:url(#salesAreaGradient)}.sales-chart .chart-qty-label{fill:#7c3aed;font-weight:650}.sales-chart .chart-cash-label{fill:#087f5b;font-weight:650}.chart-day-divider{stroke:#edf0f5}.chart-hit{fill:transparent;cursor:crosshair}
     .chart-hit:focus{stroke:#087f5b;stroke-width:2}.chart-legend{display:flex;gap:20px;flex-wrap:wrap}.chart-legend span:first-child{color:#7c3aed}.chart-legend span:last-child{color:#087f5b}
@@ -262,8 +262,9 @@ function salesChart(allPoints) {
   if (first<0) return '<div class="empty"><strong>Нет данных для графика</strong>За выбранный период в загруженном отчёте нет ненулевых продаж, возвратов или начислений. Нулевой график скрыт.</div>';
   const points=allPoints.slice(first);
   const notice=first ? '<div class="notice">Начало периода '+esc(allPoints[0].date)+' — '+esc(allPoints[first-1].date)+': в загруженном отчёте нет продаж, возвратов и начислений. Эти дни скрыты на графике. Данные начинаются с '+esc(points[0].date)+'.</div>' : '';
-  const left=76, width=Math.max(660,points.length*112), right=left+width, svgWidth=right+140;
-  const top=40, bottom=280, height=bottom-top;
+  const dayWidth=Math.max(84,...points.map(p=>rubles(p.net).length*6+18),...points.map(p=>String(p.sales+' шт.').length*6+18));
+  const left=70, width=Math.max(660,points.length*dayWidth), right=left+width, svgWidth=right+118;
+  const top=36, bottom=248, height=bottom-top;
   const qtyMax=Math.max(4,Math.ceil(Math.max(...points.map(p=>p.sales))/4)*4);
   const cash=points.map(p=>Number(p.net));
   const rawMin=Math.min(0,...cash), rawMax=Math.max(0,...cash);
@@ -284,7 +285,7 @@ function salesChart(allPoints) {
   const path=smoothChartPath(cash.map((v,i)=>[x(i),yCash(v)]));
   svg+='<path class="chart-area" d="'+path+' L '+x(points.length-1)+' '+bottom+' L '+x(0)+' '+bottom+' Z"/>';
   svg+='<line class="chart-zero" x1="'+left+'" x2="'+right+'" y1="'+yCash(0)+'" y2="'+yCash(0)+'"/>';
-  points.forEach((p,i)=>{const bar=Math.min(36,width/points.length*0.45);svg+='<rect class="chart-bar" rx="5" x="'+(x(i)-bar/2)+'" y="'+yQty(p.sales)+'" width="'+bar+'" height="'+(bottom-yQty(p.sales))+'"/>';});
+  points.forEach((p,i)=>{const bar=Math.min(24,width/points.length*0.34);svg+='<rect class="chart-bar" rx="5" x="'+(x(i)-bar/2)+'" y="'+yQty(p.sales)+'" width="'+bar+'" height="'+(bottom-yQty(p.sales))+'"/>';});
   svg+='<path class="chart-money" d="'+path+'"/>';
   points.forEach((p,i)=>{
     const tip=p.date+' · Продано: '+p.sales+' · Возвраты: '+p.returns+' · К перечислению: '+rubles(p.net);
