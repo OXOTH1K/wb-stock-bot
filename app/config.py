@@ -34,6 +34,7 @@ class Settings:
     telegram_wb_emoji_id: str = ""
     telegram_ozon_emoji_id: str = ""
     crm_public_url: str = ""
+    wb_finance_token: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -125,6 +126,7 @@ class Settings:
                 )
             ),
             ozon_warehouse_id=ozon_warehouse_id,
+            wb_finance_token=os.getenv("WB_FINANCE_TOKEN", "").strip(),
             telegram_wb_emoji_id=os.getenv(
                 "TELEGRAM_WB_EMOJI_ID", ""
             ).strip(),

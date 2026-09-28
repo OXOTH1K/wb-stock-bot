@@ -12,6 +12,7 @@ from .crm_security import CRMAccessPolicy
 from .db import StateDB
 from .service import StockMonitorService
 from .wb_order_lookup import WBOrderLookup
+from .wb_sales_analytics import WBSalesAnalytics
 
 if TYPE_CHECKING:
     from .shared_inventory import SharedInventoryService
@@ -27,12 +28,14 @@ class CRMServer:
         db: StateDB,
         shared_inventory: "SharedInventoryService | None" = None,
         order_lookup: WBOrderLookup | None = None,
+        sales_analytics: WBSalesAnalytics | None = None,
     ):
         self.settings = settings
         self.service = service
         self.db = db
         self.shared_inventory = shared_inventory
         self.order_lookup = order_lookup
+        self.sales_analytics = sales_analytics
         self.security = CRMAccessPolicy(settings)
         try:
             self._allowed_networks = tuple(
@@ -73,6 +76,7 @@ class CRMServer:
                 web.get("/api/inventory/movements", self.inventory_movements),
                 web.get("/api/wb/order-lookup", self.lookup_wb_order),
                 web.get("/api/wb/fbw-orders", self.fbw_orders),
+                web.get("/api/wb/sales-analytics", self.wb_sales_analytics),
             ]
         )
 
@@ -136,6 +140,16 @@ class CRMServer:
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    async def wb_sales_analytics(self, request: web.Request) -> web.Response:
+        if self.sales_analytics is None:
+            return web.json_response({"error": "Финансовые отчёты WB не подключены."}, status=503)
+        try:
+            data = self.sales_analytics.view(request.query.get('date_from', ''),
+                request.query.get('date_to', ''), request.query.get('sku', '').strip())
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(data)
 
     async def health(self, request: web.Request) -> web.Response:
         return web.json_response(

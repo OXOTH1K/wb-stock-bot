@@ -89,12 +89,26 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.equal(urls[0], '/api/wb/fbw-orders?date_from=2026-09-20&date_to=2026-09-21');
   context.fetch = async url => {urls.push(url);return {ok:true,text:async()=>JSON.stringify(empty)};};
   element('fbwBody').listeners.click({target:{closest:()=>({dataset:{orderNumber:'exact.srid'}})}});
-  assert.equal(element('orderNumber').value, 'exact.srid');
-  assert.equal(element('lookupView').hidden, false);
-  assert.equal(element('fbwView').hidden, true);
-  assert.equal(element('lookupTab').attributes['aria-selected'], 'true');
+  assert.equal(element('orderNumber').value, 'second'); // Standalone search remains untouched.
+  assert.equal(element('lookupView').hidden, true);
+  assert.equal(element('fbwView').hidden, false);
+  assert.equal(element('fbwList').hidden, true);
+  assert.equal(element('fbwDetail').hidden, false);
+  assert.equal(element('fbwTab').attributes['aria-selected'], 'true');
   assert.equal(urls.at(-1), '/api/wb/order-lookup?number=exact.srid');
   assert.equal(element('fbwDateFrom').value, '2026-09-20');
+  const listBefore = element('fbwBody').innerHTML;
+  vm.runInContext('backToFbw()', context);
+  assert.equal(element('fbwBody').innerHTML, listBefore);
+  assert.equal(element('fbwDetail').hidden, true);
+  assert.equal(element('fbwList').hidden, false);
+  // A slow detail request must not reopen the detail after Back.
+  context.fetch = () => new Promise(resolve => {finishFirst = resolve;});
+  const detailsRequest = vm.runInContext("openFbwOrder('slow')", context);
+  vm.runInContext('backToFbw()', context);
+  finishFirst({ok:true,text:async()=>JSON.stringify({...empty,coverage:'late detail'})});
+  await detailsRequest;
+  assert.ok(!element('fbwDetailBody').innerHTML.includes('late detail'));
 
   element('fbwDateFrom').value = '2026-09-22';
   const requests = urls.length;
@@ -111,6 +125,35 @@ assert.equal(element('inventorySearch').value, 'existing search');
   finishFirst({ok:true,text:async()=>JSON.stringify(fbwEmpty)});
   await oldPeriod;
   assert.match(element('fbwBody').innerHTML, /Период: 2026-09-21/);
+  const analytics = {sku:'SKU', products:[{sku:'SKU',title:malicious}], date_from:'2026-09-20',date_to:'2026-09-21',
+    ready:true,syncing:false,error:'',updated_at:'',stale:false,has_rows:true,
+    totals:{sales:2,returns:1,net:'-123.45'},points:[{date:'2026-09-20',sales:2,returns:0,net:'100.00'},{date:'2026-09-21',sales:0,returns:1,net:'-223.45'}]};
+  context.result=analytics;
+  vm.runInContext('renderAnalytics(result)', context);
+  assert.match(element('analyticsBody').innerHTML, /<svg/);
+  assert.match(element('analyticsBody').innerHTML, /левая шкала/);
+  assert.match(element('analyticsBody').innerHTML, /правая шкала/);
+  assert.match(element('analyticsBody').innerHTML, /-123,45/);
+  assert.ok(!/NaN|Infinity/.test(element('analyticsBody').innerHTML));
+  context.result={...analytics,ready:false,error:malicious,points:[]};
+  vm.runInContext('renderAnalytics(result)', context);
+  assert.ok(!element('analyticsBody').innerHTML.includes('<svg'));
+  assert.ok(!element('analyticsBody').innerHTML.includes('<img'));
+  context.result={...analytics,points:[{date:'2026-09-20',sales:0,returns:0,net:'0.00'}]};
+  vm.runInContext('renderAnalytics(result)', context);
+  assert.ok(!/NaN|Infinity/.test(element('analyticsBody').innerHTML));
+  element('analyticsDateFrom').value='2026-09-20'; element('analyticsDateTo').value='2026-09-21'; element('analyticsSku').value='SKU';
+  context.fetch=()=>new Promise(resolve=>{finishFirst=resolve;});
+  const oldChart=vm.runInContext('loadAnalytics()',context);
+  element('analyticsSku').listeners.input();
+  finishFirst({ok:true,text:async()=>JSON.stringify(analytics)});
+  await oldChart;
+  assert.ok(!element('analyticsBody').innerHTML.includes('<svg'));
+  context.fetch=async()=>({ok:true,text:async()=>JSON.stringify(analytics)});
+  await vm.runInContext('loadAnalytics()',context);
+  assert.match(element('analyticsBody').innerHTML, /<svg/);
+  assert.ok(!element('analyticsSku').innerHTML.includes('<img'));
+
   // A malicious seller article must remain inert HTML data, never executable JS.
   element('inventorySearch').value = '';
   context.badSku = "x');alert(1);//\"><img src=x onerror=alert(1)>";
