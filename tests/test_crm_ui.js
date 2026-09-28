@@ -13,7 +13,7 @@ function element(id) {
   return nodes.get(id);
 }
 const context = vm.createContext({document:{getElementById:element}, console, URLSearchParams,
-  setTimeout:()=>1, clearTimeout:()=>{},
+  setTimeout:()=>1, clearTimeout:()=>{}, AbortController,
   fetch:async()=>({ok:true, text:async()=>JSON.stringify({items:[], totals:{}})})});
 vm.runInContext(source, context);
 const empty = {coverage:'Test', sources:[], items:[], syncing:false, partial:false};
@@ -227,7 +227,11 @@ assert.equal(element('inventorySearch').value, 'existing search');
   await vm.runInContext('installCRMUpdate()', context);
   assert.equal(element('crmUpdateButton').hidden, true);
   assert.equal(updateRequests.at(-1).url, '/api/update');
+  assert.ok(updateRequests.at(-1).options.signal instanceof AbortSignal);
   assert.equal(JSON.parse(updateRequests.at(-1).options.body).tag, 'v1.2.3');
+  context.fetch = async()=>({ok:false,statusText:'Conflict',text:async()=>JSON.stringify({message:'sudo: a password is required'})});
+  const updateError = await vm.runInContext("api('/api/update',{method:'POST',body:'{}'}).catch(error=>error.message)",context);
+  assert.equal(updateError,'sudo: a password is required');
   assert.match(page,/id="crmUpdateButton"[^>]*hidden/);
   console.log('CRM UI: lookup and FBW rendering, escaping, tabs, navigation, dates and request races passed');
 })().catch(error => { console.error(error); process.exitCode=1; });

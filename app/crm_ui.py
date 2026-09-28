@@ -384,7 +384,7 @@ async function api(url, options={}) {
   const text = await response.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = {error:text}; }
-  if (!response.ok) throw new Error(data?.error || response.statusText);
+  if (!response.ok) throw new Error(data?.error || data?.message || response.statusText);
   return data;
 }
 function setError(id, err){ document.getElementById(id).innerHTML = '<div class="error">'+esc(err.message || err)+'</div>'; }
@@ -434,11 +434,16 @@ async function installCRMUpdate() {
   button.disabled=true;
   status.hidden=false;
   status.textContent='Проверяю и запускаю обновление…';
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),20000);
   try {
-    const result=await api('/api/update',{method:'POST',body:JSON.stringify({tag:button.dataset.tag})});
+    const result=await api('/api/update',{method:'POST',body:JSON.stringify({tag:button.dataset.tag}),signal:controller.signal});
     status.textContent=result.message;
     button.hidden=true;
-  } catch(e) {status.textContent=e.message; button.disabled=false;}
+  } catch(e) {
+    status.textContent=e.name==='AbortError' ? 'CRM не ответила за 20 секунд. Проверьте журнал обновления на сервере.' : e.message;
+    button.disabled=false;
+  } finally {clearTimeout(timeout);}
 }
 function renderInventory() {
   const q = document.getElementById('inventorySearch').value.trim().toLowerCase();

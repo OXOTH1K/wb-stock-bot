@@ -121,17 +121,32 @@ class CRMReleaseChecker:
                             url=release.get('html_url', ''), message='')
 
     async def trigger(self, tag):
-        status = await self.check(force=True)
-        if not status['available'] or tag != status['version']:
+        log.info('CRM update requested for %s', tag)
+        try:
+            status = await asyncio.wait_for(self.check(force=True), timeout=12)
+        except asyncio.TimeoutError:
+            log.warning('Timed out rechecking GitHub before CRM update')
+            return False, 'Проверка GitHub не ответила за 12 секунд. Попробуйте ещё раз.'
+        if not status['available']:
+            reason = status.get('message') or 'Автоматическое обновление релиза недоступно.'
+            log.info('CRM update %s rejected by fresh release check: %s', tag, reason)
+            return False, reason
+        if tag != status['version']:
+            log.info('CRM update tag mismatch: requested %s, validated %s', tag, status['version'])
             return False, 'Для этого релиза автоматическое обновление недоступно.'
         try:
-            process = await asyncio.create_subprocess_exec(
+            process = await asyncio.wait_for(asyncio.create_subprocess_exec(
                 '/usr/bin/sudo', '-n', '/usr/bin/systemctl', 'start', '--no-block',
-                UPDATE_SERVICE, stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL)
-            result = await asyncio.wait_for(process.wait(), timeout=5)
-        except (OSError, asyncio.TimeoutError):
+                UPDATE_SERVICE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE), timeout=5)
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
+        except (OSError, asyncio.TimeoutError) as exc:
+            log.warning('Could not start CRM update systemd unit (%s)', type(exc).__name__)
             return False, 'Служба автоматического обновления не настроена.'
-        if result:
-            return False, 'Не удалось запустить обновление. Обратитесь к администратору сервера.'
+        if process.returncode:
+            detail = (stderr or stdout).decode('utf-8', errors='replace').strip()
+            log.error('systemctl rejected CRM update start (exit status %s): %s',
+                      process.returncode, detail[:500] or 'no command output')
+            return False, detail[:300] or 'Не удалось запустить обновление. Проверьте sudoers и systemd.'
+        log.info('CRM update systemd unit accepted release %s', tag)
         return True, 'Обновление запущено. CRM перезапустится после установки.'

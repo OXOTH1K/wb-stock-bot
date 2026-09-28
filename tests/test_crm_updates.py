@@ -60,7 +60,8 @@ class ReleaseCheckTests(unittest.IsolatedAsyncioTestCase):
     async def test_trigger_rechecks_and_uses_only_fixed_systemd_unit(self):
         checker = self.checker()
         process = AsyncMock()
-        process.wait.return_value = 0
+        process.communicate.return_value = (b'', b'')
+        process.returncode = 0
         with patch('app.crm_updates.asyncio.create_subprocess_exec', new=AsyncMock(return_value=process)) as run:
             started, _ = await checker.trigger('v1.2.3')
         self.assertTrue(started)
@@ -73,3 +74,20 @@ class ReleaseCheckTests(unittest.IsolatedAsyncioTestCase):
             started, _ = await checker.trigger('v9.9.9')
         self.assertFalse(started)
         run.assert_not_awaited()
+
+    async def test_trigger_returns_fresh_release_check_reason(self):
+        checker = self.checker(body='manual only')
+        started, message = await checker.trigger('v1.2.3')
+        self.assertFalse(started)
+        self.assertIn('ручной проверки', message)
+
+    async def test_trigger_reports_sudo_error_from_systemctl(self):
+        checker = self.checker()
+        process = AsyncMock()
+        process.communicate.return_value = (b'', b'sudo: a password is required')
+        process.returncode = 1
+        with patch('app.crm_updates.asyncio.create_subprocess_exec',
+                   new=AsyncMock(return_value=process)):
+            started, message = await checker.trigger('v1.2.3')
+        self.assertFalse(started)
+        self.assertIn('password is required', message)
