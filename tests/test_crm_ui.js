@@ -7,6 +7,7 @@ const source = page.match(/<script>([\s\S]*?)<\/script>/)[1];
 const nodes = new Map();
 function element(id) {
   if (!nodes.has(id)) nodes.set(id, {value:'', innerHTML:'', hidden:false, attributes:{}, listeners:{},
+    dataset:{}, disabled:false, textContent:'', text:'',
     setAttribute(k,v) {this.attributes[k]=v;}, addEventListener(k, fn) {this.listeners[k]=fn;},
     focus() {}, reportValidity() {return true;}, querySelectorAll() {return [];}});
   return nodes.get(id);
@@ -208,5 +209,22 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.equal(writes[0].url, '/api/session');
   assert.equal(writes[1].options.headers['X-CSRF-Token'], 'test-csrf');
   assert.equal(writes[1].options.credentials, 'same-origin');
+
+  const updateRequests=[];
+  context.fetch = async (url, options) => {
+    updateRequests.push({url,options});
+    return {ok:true,text:async()=>JSON.stringify(
+      url === '/api/update' && !options?.method
+        ? {available:true,version:'v1.2.3',current:'1234567'}
+        : {message:'Обновление запущено.'})};
+  };
+  await vm.runInContext('checkCRMUpdate()', context);
+  assert.equal(element('crmUpdateButton').hidden, false);
+  assert.equal(element('crmUpdateButton').dataset.tag, 'v1.2.3');
+  await vm.runInContext('installCRMUpdate()', context);
+  assert.equal(element('crmUpdateButton').hidden, true);
+  assert.equal(updateRequests.at(-1).url, '/api/update');
+  assert.equal(JSON.parse(updateRequests.at(-1).options.body).tag, 'v1.2.3');
+  assert.match(page,/id="crmUpdateButton"[^>]*hidden/);
   console.log('CRM UI: lookup and FBW rendering, escaping, tabs, navigation, dates and request races passed');
 })().catch(error => { console.error(error); process.exitCode=1; });

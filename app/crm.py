@@ -9,6 +9,7 @@ from aiohttp import web
 from .config import Settings
 from .crm_ui import INDEX_HTML
 from .crm_security import CRMAccessPolicy
+from .crm_updates import CRMReleaseChecker
 from .db import StateDB
 from .service import StockMonitorService
 from .wb_order_lookup import WBOrderLookup
@@ -29,6 +30,7 @@ class CRMServer:
         shared_inventory: "SharedInventoryService | None" = None,
         order_lookup: WBOrderLookup | None = None,
         sales_analytics: WBSalesAnalytics | None = None,
+        release_checker: CRMReleaseChecker | None = None,
     ):
         self.settings = settings
         self.service = service
@@ -36,6 +38,7 @@ class CRMServer:
         self.shared_inventory = shared_inventory
         self.order_lookup = order_lookup
         self.sales_analytics = sales_analytics
+        self.release_checker = release_checker
         self.security = CRMAccessPolicy(settings)
         try:
             self._allowed_networks = tuple(
@@ -77,6 +80,8 @@ class CRMServer:
                 web.get("/api/wb/order-lookup", self.lookup_wb_order),
                 web.get("/api/wb/fbw-orders", self.fbw_orders),
                 web.get("/api/wb/sales-analytics", self.wb_sales_analytics),
+                web.get("/api/update", self.update_status),
+                web.post("/api/update", self.start_update),
             ]
         )
 
@@ -150,6 +155,24 @@ class CRMServer:
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response(data)
+
+    async def update_status(self, request: web.Request) -> web.Response:
+        if self.release_checker is None:
+            return web.json_response({'available': False, 'message': 'Проверка обновлений не подключена.'})
+        return web.json_response(await self.release_checker.check())
+
+    async def start_update(self, request: web.Request) -> web.Response:
+        if self.release_checker is None:
+            return web.json_response({'error': 'Обновление не настроено.'}, status=503)
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            return web.json_response({'error': 'Некорректный запрос обновления.'}, status=400)
+        tag = body.get('tag') if isinstance(body, dict) else None
+        if not isinstance(tag, str) or len(tag) > 64:
+            return web.json_response({'error': 'Некорректная версия релиза.'}, status=400)
+        started, message = await self.release_checker.trigger(tag)
+        return web.json_response({'message': message}, status=202 if started else 409)
 
     async def health(self, request: web.Request) -> web.Response:
         return web.json_response(

@@ -79,7 +79,7 @@ class CRMSecurityHTTPTests(unittest.IsolatedAsyncioTestCase):
         before = self.db.conn.total_changes
         paths = ['/', '/healthz', '/api/session', '/api/inventory', '/api/inventory/movements',
                  '/api/wb/order-lookup?number=1', '/api/wb/fbw-orders', '/api/wb/sales-analytics', '/.env', '/.git/config',
-                 '/data/stocks.sqlite3', '/api/inventory/set', '/api/inventory/adjust', '/api/inventory/available/set']
+                 '/api/update', '/data/stocks.sqlite3', '/api/inventory/set', '/api/inventory/adjust', '/api/inventory/available/set']
         for path in paths:
             for method in ('GET', 'POST', 'OPTIONS'):
                 response = await self.client.request(method, path, headers={'X-Forwarded-For': '127.0.0.1',
@@ -105,6 +105,15 @@ class CRMSecurityHTTPTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post('/api/inventory/set', json={'sku': 'SKU', 'quantity': 7}, headers=self.headers)
         self.assertEqual(response.status, 200)
         self.assertEqual(self.db.get_local_stock(('SKU',))['SKU'], 7)
+
+    async def test_update_routes_are_authenticated_and_fail_closed_when_not_configured(self):
+        response = await self.client.get('/api/update', headers=self.headers)
+        self.assertEqual(response.status, 200)
+        self.assertFalse((await response.json())['available'])
+        response = await self.client.post('/api/update', json={'tag': 'v1.2.3'}, headers=self.headers)
+        self.assertEqual(response.status, 503)
+        response = await self.client.post('/api/update', json={'tag': 'v1.2.3'}, headers=auth())
+        self.assertEqual(response.status, 403)
 
     async def test_content_type_size_compression_and_integer_validation(self):
         for quantity in (True, 1.5, '7', -1, 10**30):

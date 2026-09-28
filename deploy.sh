@@ -23,6 +23,10 @@ if [[ ! "$SERVICE" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   echo 'Invalid SERVICE name' >&2
   exit 1
 fi
+if [[ ! "$APP_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ || ! "$APP_DIR" =~ ^/[a-zA-Z0-9_./-]+$ || "$APP_DIR" == *..* ]]; then
+  echo 'APP_USER or APP_DIR contains unsupported characters.' >&2
+  exit 1
+fi
 if [[ $SETUP_CADDY == 1 && -z "$CRM_DOMAIN" ]]; then
   echo 'Set CRM_DOMAIN or pass a DNS hostname after --setup-caddy. No changes made.' >&2
   exit 1
@@ -49,9 +53,13 @@ CADDY_CUSTOM=/usr/local/lib/wb-stock-bot/caddy
 CADDY_DROPIN=/etc/systemd/system/caddy.service.d/wb-crm-selectel.conf
 CADDY_ENV=/etc/caddy/wb-crm-selectel.env
 CADDY_DNS_CHANGED=0
+UPDATE_HELPER=/usr/local/lib/wb-stock-bot/crm-update-deploy.sh
+UPDATE_UNIT=/etc/systemd/system/wb-stock-bot-crm-update.service
+UPDATE_SUDOERS=/etc/sudoers.d/wb-stock-bot-crm-update
 DROPIN="/etc/systemd/system/$SERVICE.service.d/crm-security.conf"
 APP_CHANGED=0
 CONFIG_CHANGED=0
+UPDATE_CONFIG_CHANGED=0
 CADDY_NEW=0
 CADDY_WAS_ACTIVE=0
 SUCCESS=0
@@ -98,6 +106,12 @@ cleanup() {
       if [[ $CADDY_DNS_CHANGED == 1 ]]; then systemctl restart caddy || true; else systemctl reload caddy || true; fi
     elif [[ $CONFIG_CHANGED == 1 ]]; then
       systemctl stop caddy || true
+    fi
+    if [[ $UPDATE_CONFIG_CHANGED == 1 ]]; then
+      restore_file "$UPDATE_HELPER" update-helper.old
+      restore_file "$UPDATE_UNIT" update-unit.old
+      restore_file "$UPDATE_SUDOERS" update-sudoers.old
+      systemctl daemon-reload || true
     fi
     echo 'Python package upgrades and an installed Caddy package are retained; application data is not rolled back.' >&2
   fi
@@ -214,6 +228,43 @@ if [[ $HEALTH_OK != 1 ]]; then
   exit 1
 fi
 systemctl is-active --quiet "$SERVICE"
+
+# Keep the privileged runner outside the app tree and grant the service user
+# permission to start only this fixed systemd unit, never an arbitrary command.
+if [[ ! -x /usr/bin/systemctl ]] || ! command -v visudo >/dev/null; then
+  echo '/usr/bin/systemctl and visudo are required to configure CRM updates.' >&2
+  exit 1
+fi
+SYSTEMCTL_BIN=/usr/bin/systemctl
+backup_file "$UPDATE_HELPER" update-helper.old
+backup_file "$UPDATE_UNIT" update-unit.old
+backup_file "$UPDATE_SUDOERS" update-sudoers.old
+UPDATE_CONFIG_CHANGED=1
+install -d -o root -g root -m 0755 "$(dirname "$UPDATE_HELPER")"
+install -o root -g root -m 0755 "$APP_DIR/deploy.sh" "$STAGE/crm-update-deploy.sh"
+mv -f "$STAGE/crm-update-deploy.sh" "$UPDATE_HELPER"
+cat > "$STAGE/crm-update.service" <<EOF
+[Unit]
+Description=Update wb-stock-bot from an approved GitHub release
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=APP_DIR=$APP_DIR
+Environment=APP_USER=$APP_USER
+Environment=SERVICE=$SERVICE
+ExecStart=$UPDATE_HELPER
+TimeoutStartSec=30min
+PrivateTmp=true
+EOF
+install -o root -g root -m 0644 "$STAGE/crm-update.service" "$UPDATE_UNIT"
+printf '%s ALL=(root) NOPASSWD: %s start --no-block wb-stock-bot-crm-update.service\n' \
+  "$APP_USER" "$SYSTEMCTL_BIN" > "$STAGE/crm-update.sudoers"
+visudo -cf "$STAGE/crm-update.sudoers"
+install -o root -g root -m 0440 "$STAGE/crm-update.sudoers" "$UPDATE_SUDOERS"
+systemctl daemon-reload
 if [[ $SETUP_CADDY == 1 ]]; then
   systemctl enable caddy
   if [[ $CADDY_DNS_CHANGED == 1 ]]; then
