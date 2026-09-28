@@ -7,6 +7,7 @@ from contextlib import AsyncExitStack
 
 from .config import Settings
 from .crm import CRMServer
+from .crm_updates import CRMReleaseChecker
 from .db import StateDB
 from .orders import OrderMonitor
 from .ozon import OzonIntegration
@@ -126,6 +127,7 @@ async def amain() -> None:
                 shared_inventory=shared_inventory,
                 order_lookup=order_lookup,
                 sales_analytics=sales_analytics,
+                release_checker=CRMReleaseChecker() if settings.crm_enabled else None,
             )
             await crm.start()
 

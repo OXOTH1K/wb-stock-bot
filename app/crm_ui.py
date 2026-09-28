@@ -16,7 +16,7 @@ INDEX_HTML = r"""<!doctype html>
     *{box-sizing:border-box} body{margin:0;font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
     button,input{font:inherit} button{cursor:pointer}
     .shell{max-width:1400px;margin:0 auto;padding:24px}
-    header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.header-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
     h1{font-size:24px;margin:0}.sub{color:var(--muted);font-size:13px}
     .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:visible}
     .panel-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center}
@@ -56,7 +56,7 @@ INDEX_HTML = r"""<!doctype html>
     .timeline li{position:relative;padding:0 0 18px 8px}.timeline li:before{content:'';position:absolute;left:-24px;top:5px;width:10px;height:10px;border-radius:50%;background:#7c3aed}
     .lookup-card pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:12px;border-radius:8px;font-size:12px}
     .source-status{font-size:12px;color:var(--muted);margin:8px 0 14px}.lookup-help{margin:0 18px 16px;color:var(--muted);font-size:13px}
-    @media(max-width:800px){.shell{padding:14px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:flex-start;flex-direction:column}.panel-head{align-items:flex-start;flex-direction:column}.search{width:100%;min-width:0}}
+    @media(max-width:800px){.shell{padding:14px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:flex-start;flex-direction:column}.header-actions{width:100%}.panel-head{align-items:flex-start;flex-direction:column}.search{width:100%;min-width:0}}
     .chart-wrap{width:100%;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,#fafaff,#fff);padding:12px 0}.sales-chart{width:100%;height:auto;display:block}.sales-chart text{fill:var(--muted);font-size:12px}
     .chart-grid{stroke:var(--line)}.chart-zero{stroke:#16a085;stroke-dasharray:4 4}.chart-bar{fill:url(#salesBarGradient)}
     .chart-money{stroke:#087f5b;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;fill:none}.chart-dot{fill:#fff;stroke:#087f5b;stroke-width:2}.chart-area{fill:url(#salesAreaGradient)}.chart-hit{fill:transparent;cursor:crosshair}
@@ -69,7 +69,10 @@ INDEX_HTML = r"""<!doctype html>
 <div class="shell">
   <header>
     <div><h1>CRM склада</h1><div class="sub">Остатки товаров · локальный склад · WB · OZON</div></div>
-    <button class="btn" id="refreshButton">Обновить экран</button>
+    <div class="header-actions"><span class="sub" id="crmUpdateStatus" aria-live="polite" hidden></span>
+      <button class="btn primary" id="crmUpdateButton" type="button" hidden>Установить новую версию</button>
+      <button class="btn" id="refreshButton">Обновить экран</button>
+    </div>
   </header>
 
   <nav class="tabs" role="tablist" aria-label="Разделы CRM">
@@ -402,6 +405,35 @@ async function loadInventory() {
     renderInventory();
   } catch (e) { setError('inventoryBody', e); }
 }
+async function checkCRMUpdate() {
+  const button=document.getElementById('crmUpdateButton');
+  const status=document.getElementById('crmUpdateStatus');
+  try {
+    const update=await api('/api/update');
+    button.hidden=!update.available;
+    if(update.available) {
+      button.dataset.tag=update.version;
+      button.textContent='Установить '+update.version;
+      status.textContent='Доступен релиз '+update.version;
+      status.hidden=false;
+    } else {
+      button.dataset.tag='';
+      status.hidden=true;
+    }
+  } catch(e) {button.hidden=true; status.hidden=true;}
+}
+async function installCRMUpdate() {
+  const button=document.getElementById('crmUpdateButton');
+  const status=document.getElementById('crmUpdateStatus');
+  button.disabled=true;
+  status.hidden=false;
+  status.textContent='Проверяю и запускаю обновление…';
+  try {
+    const result=await api('/api/update',{method:'POST',body:JSON.stringify({tag:button.dataset.tag})});
+    status.textContent=result.message;
+    button.hidden=true;
+  } catch(e) {status.textContent=e.message; button.disabled=false;}
+}
 function renderInventory() {
   const q = document.getElementById('inventorySearch').value.trim().toLowerCase();
   const rows = inventoryRows.filter(x => !q || x.sku.toLowerCase().includes(q) || x.title.toLowerCase().includes(q));
@@ -451,6 +483,7 @@ async function setAvailable(sku, key) {
 }
 
 document.getElementById('refreshButton').addEventListener('click', refreshView);
+document.getElementById('crmUpdateButton').addEventListener('click', installCRMUpdate);
 for (const view of ['inventory','lookup','fbw','analytics']) document.getElementById(view+'Tab').addEventListener('click', () => showView(view));
 document.getElementById('inventoryBody').addEventListener('click', event => {
   const button = event.target.closest('button[data-stock-action]');
@@ -478,6 +511,8 @@ document.getElementById('lookupForm').addEventListener('submit', event => {event
 document.getElementById('orderNumber').addEventListener('input', () => { clearTimeout(lookupTimer); lookupSequence++; });
 document.getElementById('inventorySearch').addEventListener('input',renderInventory);
 loadInventory();
+checkCRMUpdate();
+if(typeof setInterval==='function') setInterval(checkCRMUpdate,6*60*60*1000);
 </script>
 </body></html>
 """
