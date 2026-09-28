@@ -5,11 +5,12 @@ const vm = require('node:vm');
 const source = fs.readFileSync('app/crm_ui.py', 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
 const nodes = new Map();
 function element(id) {
-  if (!nodes.has(id)) nodes.set(id, {value:'', innerHTML:'', hidden:false, attributes:{},
-    setAttribute(k,v) {this.attributes[k]=v;}, addEventListener() {}, focus() {}, reportValidity() {}});
+  if (!nodes.has(id)) nodes.set(id, {value:'', innerHTML:'', hidden:false, attributes:{}, listeners:{},
+    setAttribute(k,v) {this.attributes[k]=v;}, addEventListener(k, fn) {this.listeners[k]=fn;},
+    focus() {}, reportValidity() {return true;}, querySelectorAll() {return [];}});
   return nodes.get(id);
 }
-const context = vm.createContext({document:{getElementById:element}, console,
+const context = vm.createContext({document:{getElementById:element}, console, URLSearchParams,
   setTimeout:()=>1, clearTimeout:()=>{},
   fetch:async()=>({ok:true, text:async()=>JSON.stringify({items:[], totals:{}})})});
 vm.runInContext(source, context);
@@ -54,5 +55,61 @@ assert.equal(element('inventorySearch').value, 'existing search');
   await first;
   assert.match(element('lookupBody').innerHTML, /second result/);
   assert.ok(!element('lookupBody').innerHTML.includes('first result'));
-  console.log('CRM UI: rendering, escaping, tabs, empty/partial states and search races passed');
+
+  const fbwEmpty = {date_from:'2026-09-20', date_to:'2026-09-21', groups:[], sources:[],
+    order_count:0, product_count:0, syncing:false, partial:false, unclassified_count:0};
+  context.result = {...fbwEmpty, partial:true};
+  vm.runInContext('renderFbwOrders(result)', context);
+  assert.match(element('fbwBody').innerHTML, /Данные пока неполные/);
+  assert.match(element('fbwBody').innerHTML, /нет заказов FBW/);
+  context.result = {...fbwEmpty, syncing:true};
+  vm.runInContext('renderFbwOrders(result)', context);
+  assert.match(element('fbwBody').innerHTML, /Архив загружается/);
+  element('fbwBody').querySelectorAll = () => [{dataset:{fbwGroup:'SKU'}}];
+  context.result = {...fbwEmpty, order_count:1, product_count:1, unclassified_count:2,
+    groups:[{key:'SKU',title:malicious,article:'SKU',count:1, orders:[{
+      index:1, number:'basket', lookup_number:'srid"'+malicious, warehouse:malicious, region:malicious,
+      status:{label:malicious, at:''}, created_at:'2026-09-20T09:00:00Z',
+    }]}]};
+  vm.runInContext('renderFbwOrders(result)', context);
+  assert.ok(!element('fbwBody').innerHTML.includes('<img'));
+  assert.match(element('fbwBody').innerHTML, /data-fbw-group="SKU" open/);
+  assert.match(element('fbwBody').innerHTML, /<td>1<\/td>/);
+  assert.match(element('fbwBody').innerHTML, /Заказов: 1/);
+  assert.match(element('fbwBody').innerHTML, /Без подтверждённого типа склада: 2/);
+
+  let urls = [];
+  context.fetch = async url => {urls.push(url);return {ok:true,text:async()=>JSON.stringify(fbwEmpty)};};
+  element('fbwDateFrom').value = '2026-09-20';
+  element('fbwDateTo').value = '2026-09-21';
+  vm.runInContext("showView('fbw')", context);
+  assert.equal(element('lookupView').hidden, true);
+  assert.equal(element('fbwView').hidden, false);
+  assert.equal(element('fbwTab').attributes['aria-selected'], 'true');
+  assert.equal(urls[0], '/api/wb/fbw-orders?date_from=2026-09-20&date_to=2026-09-21');
+  context.fetch = async url => {urls.push(url);return {ok:true,text:async()=>JSON.stringify(empty)};};
+  element('fbwBody').listeners.click({target:{closest:()=>({dataset:{orderNumber:'exact.srid'}})}});
+  assert.equal(element('orderNumber').value, 'exact.srid');
+  assert.equal(element('lookupView').hidden, false);
+  assert.equal(element('fbwView').hidden, true);
+  assert.equal(element('lookupTab').attributes['aria-selected'], 'true');
+  assert.equal(urls.at(-1), '/api/wb/order-lookup?number=exact.srid');
+  assert.equal(element('fbwDateFrom').value, '2026-09-20');
+
+  element('fbwDateFrom').value = '2026-09-22';
+  const requests = urls.length;
+  await vm.runInContext('loadFbwOrders()', context);
+  assert.equal(urls.length, requests);
+  assert.match(element('fbwBody').innerHTML, /Дата начала не должна быть позже/);
+
+  element('fbwDateFrom').value = '2026-09-20';
+  context.fetch = () => new Promise(resolve => {finishFirst = resolve;});
+  const oldPeriod = vm.runInContext('loadFbwOrders()', context);
+  context.fetch = async()=>({ok:true,text:async()=>JSON.stringify({...fbwEmpty,date_from:'2026-09-21'})});
+  element('fbwDateFrom').value = '2026-09-21';
+  await vm.runInContext('loadFbwOrders()', context);
+  finishFirst({ok:true,text:async()=>JSON.stringify(fbwEmpty)});
+  await oldPeriod;
+  assert.match(element('fbwBody').innerHTML, /Период: 2026-09-21/);
+  console.log('CRM UI: lookup and FBW rendering, escaping, tabs, navigation, dates and request races passed');
 })().catch(error => { console.error(error); process.exitCode=1; });

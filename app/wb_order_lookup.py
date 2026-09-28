@@ -4,9 +4,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from .db import StateDB
+from .models import Product
 from .wb_client import WildberriesClient
 
 log = logging.getLogger(__name__)
@@ -43,6 +44,28 @@ def event_time(value: str, *, report: bool = False) -> str:
         return dt.astimezone(timezone.utc).isoformat()
     except ValueError:
         return ""
+
+
+def report_status(report: dict, sales: list[dict]) -> dict:
+    """The latest confirmed report event, never an inferred delivery stage."""
+    events = []
+    if report.get("isCancel") is True:
+        events.append({"code": "canceled", "label": "Отменён",
+                       "at": event_time(report.get("cancelDate", ""), report=True)})
+    for sale in sales:
+        prefix = str(sale.get("saleID") or "")[:1]
+        if prefix not in {"S", "R"}:
+            continue
+        events.append({"code": "returned" if prefix == "R" else "sold",
+                       "label": "Возврат" if prefix == "R" else "Продан",
+                       "at": event_time(sale.get("date", ""), report=True)})
+    if events:
+        # A confirmed event without a date cannot be ordered reliably.
+        if len(events) > 1 and any(not event["at"] for event in events):
+            return {"code": "unknown", "label": "Есть события без даты — откройте подробности", "at": ""}
+        priority = {"sold": 0, "canceled": 1, "returned": 2}
+        return max(events, key=lambda event: (event["at"], priority[event["code"]]))
+    return {"code": "ordered", "label": "Заказан · статус доставки неизвестен", "at": ""}
 
 
 class WBOrderLookup:
@@ -200,6 +223,81 @@ class WBOrderLookup:
                 "syncing": any(s["syncing"] or not s["started"] for s in sources),
                 "partial": any(s["error"] or not s["updated_at"] for s in sources)}
 
+    def fbw_orders(self, date_from: str, date_to: str, products: dict[int, Product]) -> dict:
+        try:
+            first, last = date.fromisoformat(date_from), date.fromisoformat(date_to)
+            if first.isoformat() != date_from or last.isoformat() != date_to:
+                raise ValueError
+            if first > last:
+                raise ValueError
+            start = datetime.combine(first, time.min, MSK).astimezone(timezone.utc).isoformat()
+            end = datetime.combine(last + timedelta(days=1), time.min, MSK).astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError):
+            raise ValueError("Укажите период в формате ГГГГ-ММ-ДД: дата начала не позже даты окончания.") from None
+
+        selected = {}
+        unclassified = 0
+        for link, payload in self.db.conn.execute(
+            "SELECT link_id, payload FROM wb_order_archive WHERE source='orders'"
+        ):
+            row = json.loads(payload)
+            created = event_time(row.get("date", ""), report=True)
+            if not link or not created or not start <= created < end:
+                continue
+            model = row.get("warehouseType")
+            if model != "Склад WB":
+                if model != "Склад продавца":
+                    unclassified += 1
+                continue
+            selected[link] = (row, created)
+
+        # Join by srid, not basket number; sales after the chosen date range
+        # still describe the current known state of the selected orders.
+        sales_by_order: dict[str, list[dict]] = {}
+        links = list(selected)
+        for offset in range(0, len(links), 500):
+            batch = links[offset:offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            for link, payload in self.db.conn.execute(
+                f"SELECT link_id, payload FROM wb_order_archive WHERE source='sales' AND link_id IN ({placeholders})", batch
+            ):
+                sales_by_order.setdefault(link, []).append(json.loads(payload))
+
+        groups = {}
+        for link, (row, created) in selected.items():
+            nm_id = int(row.get("nmId") or 0)
+            product = products.get(nm_id)
+            article = str(row.get("supplierArticle") or (product.vendor_code if product else "") or "")
+            key = article or (f"WB-{nm_id}" if nm_id else f"unknown:{link}")
+            group = groups.setdefault(key, {"key": key, "article": article or key,
+                                           "titles": set(), "orders": []})
+            if product and product.title:
+                group["titles"].add(product.title)
+            group["orders"].append({
+                "number": str(row.get("gNumber") or link), "lookup_number": link,
+                "created_at": created, "warehouse": str(row.get("warehouseName") or ""),
+                "region": ", ".join(str(row[k]) for k in ("countryName", "oblastOkrugName", "regionName") if row.get(k)),
+                "status": report_status(row, sales_by_order.get(link, [])),
+            })
+        result = []
+        for group in groups.values():
+            group["title"] = " / ".join(sorted(group.pop("titles"))) or "Название отсутствует в каталоге"
+            group["orders"].sort(key=lambda order: order["lookup_number"])
+            group["orders"].sort(key=lambda order: order["created_at"], reverse=True)
+            for index, order in enumerate(group["orders"], 1):
+                order["index"] = index
+            group["count"] = len(group["orders"])
+            result.append(group)
+        result.sort(key=lambda group: (group["title"].casefold(), group["article"].casefold()))
+        sources = [dict(self.sources[key], key=key) for key in ("orders", "sales")]
+        return {
+            "date_from": date_from, "date_to": date_to, "groups": result,
+            "order_count": len(selected), "product_count": len(result),
+            "unclassified_count": unclassified, "sources": sources,
+            "syncing": any(s["syncing"] or not s["started"] for s in sources),
+            "partial": any(s["error"] or not s["updated_at"] for s in sources),
+        }
+
     def _card(self, rows: list) -> dict:
         raw = [{"source": r[0], "data": json.loads(r[3]), "observed_at": r[4]} for r in rows]
         fbs = next((r["data"] for r in raw if r["source"] == "fbs"), {})
@@ -222,6 +320,8 @@ class WBOrderLookup:
             kind = "Возврат" if str(sale.get("saleID", "")).startswith("R") else "Продажа"
             add(sale.get("date"), kind + " в отчёте WB", "Отчёт WB", report_time=True)
         status, status_at = "Текущий статус доставки недоступен", None
+        if not fbs and report.get("warehouseType") == "Склад WB":
+            status = report_status(report, sales)["label"] + " (по отчётам WB)"
         report_events = [e for e in events if e["source"] == "Отчёт WB"]
         last_report_event = max(report_events, key=lambda e: e["at"]) if report_events else None
         if fbs.get("id"):
