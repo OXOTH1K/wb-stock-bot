@@ -14,6 +14,7 @@ from .db import StateDB
 from .service import StockMonitorService
 from .wb_order_lookup import WBOrderLookup
 from .wb_sales_analytics import WBSalesAnalytics
+from .version import APP_VERSION
 
 if TYPE_CHECKING:
     from .shared_inventory import SharedInventoryService
@@ -69,6 +70,7 @@ class CRMServer:
                 web.get("/", self.index),
                 web.get("/healthz", self.health),
                 web.get("/api/session", self.session),
+                web.get("/api/version", self.version),
                 web.get("/api/inventory", self.inventory),
                 web.post("/api/inventory/adjust", self.adjust_inventory),
                 web.post("/api/inventory/set", self.set_inventory),
@@ -191,6 +193,11 @@ class CRMServer:
 
     async def session(self, request: web.Request) -> web.Response:
         return web.json_response({"csrf_token": self.security.csrf_token})
+
+    async def version(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {"version": APP_VERSION}, headers={"Cache-Control": "no-store"}
+        )
 
     @staticmethod
     def _sku(nm_id: int, vendor_code: str) -> str:

@@ -79,7 +79,7 @@ class CRMSecurityHTTPTests(unittest.IsolatedAsyncioTestCase):
         before = self.db.conn.total_changes
         paths = ['/', '/healthz', '/api/session', '/api/inventory', '/api/inventory/movements',
                  '/api/wb/order-lookup?number=1', '/api/wb/fbw-orders', '/api/wb/sales-analytics', '/.env', '/.git/config',
-                 '/api/update', '/data/stocks.sqlite3', '/api/inventory/set', '/api/inventory/adjust', '/api/inventory/available/set']
+                 '/api/update', '/api/version', '/data/stocks.sqlite3', '/api/inventory/set', '/api/inventory/adjust', '/api/inventory/available/set']
         for path in paths:
             for method in ('GET', 'POST', 'OPTIONS'):
                 response = await self.client.request(method, path, headers={'X-Forwarded-For': '127.0.0.1',

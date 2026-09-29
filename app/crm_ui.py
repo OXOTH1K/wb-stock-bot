@@ -63,6 +63,7 @@ INDEX_HTML = r"""<!doctype html>
     .chart-hit:focus{stroke:#087f5b;stroke-width:2}.chart-legend{display:flex;gap:20px;flex-wrap:wrap}.chart-legend span:first-child{color:#7c3aed}.chart-legend span:last-child{color:#087f5b}
     .analytics-summary .card span{display:block;color:var(--muted);font-size:13px;margin-bottom:8px}.analytics-summary .card strong{display:block;font-size:24px}
     .detail-toolbar{padding:18px}.lookup-form select{width:100%;min-height:40px}
+    .app-footer{text-align:center;color:var(--muted);font-size:12px;padding:22px 0 4px}
   </style>
 </head>
 <body>
@@ -133,6 +134,7 @@ INDEX_HTML = r"""<!doctype html>
       <div id="analyticsBody" class="lookup-body" aria-live="polite"></div>
     </div>
   </section>
+  <footer class="app-footer">Текущая версия: <span id="appVersion">Загрузка…</span></footer>
 </div>
 
 <script>
@@ -525,8 +527,18 @@ document.getElementById('lookupForm').addEventListener('submit', event => {event
 document.getElementById('orderNumber').addEventListener('input', () => { clearTimeout(lookupTimer); lookupSequence++; });
 document.getElementById('inventorySearch').addEventListener('input',renderInventory);
 loadInventory();
+loadAppVersion();
 checkCRMUpdate();
 if(typeof setInterval==='function') setInterval(checkCRMUpdate,6*60*60*1000);
+async function loadAppVersion() {
+  const target = document.getElementById('appVersion');
+  try {
+    const data = await api('/api/version');
+    target.textContent = data.version || 'неизвестна';
+  } catch (_) {
+    target.textContent = 'не удалось загрузить';
+  }
+}
 </script>
 </body></html>
 """

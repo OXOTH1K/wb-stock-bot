@@ -88,6 +88,13 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(checker.forced, [True])
 
+    async def test_version_endpoint_reports_running_release_without_cache(self):
+        response = await self.client.get("/api/version")
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(await response.json(), {"version": "1.0.5"})
+
     async def test_inventory_unions_wb_and_ozon_by_seller_sku(self):
         self.db.replace_channel_catalog(
             "ozon",
@@ -253,6 +260,9 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get("/api/wb/fbw-orders")).status, 503)
 
     def test_inventory_and_lookup_ui_layout(self):
+        self.assertIn('class="app-footer"', INDEX_HTML)
+        self.assertIn('id="appVersion"', INDEX_HTML)
+        self.assertIn("loadAppVersion();", INDEX_HTML)
         self.assertNotIn("WB заказы", INDEX_HTML)
         self.assertNotIn("OZON заказы", INDEX_HTML)
         self.assertIn('class="tabs"', INDEX_HTML)
