@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const page = fs.readFileSync('app/crm_ui.py', 'utf8');
+assert.match(page,/а не число заказов из воронки WB/);
+assert.match(page,/Чистые выкупы/);
 const source = page.match(/<script>([\s\S]*?)<\/script>/)[1];
 const nodes = new Map();
 function element(id) {
@@ -136,6 +138,8 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.match(element('analyticsBody').innerHTML, /левая шкала/);
   assert.match(element('analyticsBody').innerHTML, /правая шкала/);
   assert.match(element('analyticsBody').innerHTML, /-123,45/);
+  assert.match(element('analyticsBody').innerHTML, /Итого за период/);
+  assert.match(element('analyticsBody').innerHTML, /<tfoot>/);
   assert.ok(!/NaN|Infinity/.test(element('analyticsBody').innerHTML));
   context.result={sku:'SKU',products:[],date_from:'2026-09-20',date_to:'2026-09-21',ready:true,
     syncing:false,error:'',updated_at:'',stale:false,has_rows:true,unit_cost:'10.00',
@@ -144,7 +148,10 @@ assert.equal(element('inventorySearch').value, 'existing search');
     costs:[{delivery:'10',penalties:'3',storage:'2',deductions:'4',acceptance:'5',rebill_logistics:'6',additional_payments:'1'}],
     points:[{date:'2026-09-20',sales:2,returns:1,net:'150.00'}],cost_reasons:[{reason:malicious,amount:'7.00'}]};
   vm.runInContext('renderUnitEconomics(result)',context);
-  assert.match(element('unitBody').innerHTML,/Итоговая прибыль/);
+  assert.match(element('unitBody').innerHTML,/Итого прибыль/);
+  assert.match(element('unitBody').innerHTML,/Итого прибыль/);
+  assert.match(element('unitBody').innerHTML,/Итого за период/);
+  assert.match(element('unitBody').innerHTML,/Итого по причинам/);
   assert.match(element('unitBody').innerHTML,/Штрафы и удержания по причинам/);
   assert.ok(!element('unitBody').innerHTML.includes('<img'));
   context.result={...context.result,unit_cost:null,economics:{...context.result.economics,cogs:null,profit:null,profit_per_unit:null,roi_percent:null}};
@@ -167,7 +174,7 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.equal((chart.match(/data-chart-tip=/g)||[]).length,2);
   assert.doesNotMatch(chart,/chart-qty-label|chart-cash-label/);
   assert.match(chart,/Возвраты: 0/);
-  assert.match(chart,/Продано: 2/);
+  assert.match(chart,/Выкупы: 2/);
   assert.match(chart,/12,34/);
   assert.match(chart,/>21.09<\/text>/);
   assert.match(chart,/viewBox="0 0 960 390"/);
@@ -191,6 +198,8 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.doesNotMatch(chart,/chart-qty-label|chart-cash-label/);
   assert.match(page,/\.chart-wrap\{width:100%;overflow:hidden/);
   assert.match(page,/\.sales-chart\{width:100%;height:auto/);
+  assert.match(page,/th\{[^}]*position:sticky/);
+  assert.match(page,/\.fbw-table th\{position:sticky/);
 
   element('analyticsDateFrom').value='2026-09-20'; element('analyticsDateTo').value='2026-09-21'; element('analyticsSku').value='SKU';
   context.fetch=()=>new Promise(resolve=>{finishFirst=resolve;});

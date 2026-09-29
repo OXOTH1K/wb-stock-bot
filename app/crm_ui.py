@@ -45,7 +45,8 @@ INDEX_HTML = r"""<!doctype html>
     .fbw-group{border:1px solid var(--line);border-radius:10px;margin:12px 0;overflow:hidden}
     .fbw-group summary{cursor:pointer;padding:14px 16px;background:#fafafa;overflow-wrap:anywhere}
     .fbw-group summary .badge{margin-left:10px}.fbw-table-wrap{overflow-x:auto}
-    .fbw-table{min-width:800px}.fbw-table th{position:static}.fbw-table td{vertical-align:top;max-width:310px;overflow-wrap:anywhere}
+    .fbw-table{min-width:800px}.fbw-table th{position:sticky;top:0;z-index:5;background:#fafafa;box-shadow:0 1px 0 var(--line)}.fbw-table td{vertical-align:top;max-width:310px;overflow-wrap:anywhere}
+    tfoot .total-row th,tfoot .total-row td{font-weight:700;background:#f3f4f6;border-top:2px solid var(--line)}tfoot .total-row th{position:static;top:auto;z-index:auto;box-shadow:none}
     .order-link{border:0;background:none;padding:0;text-align:left;color:#6d28d9;text-decoration:underline;overflow-wrap:anywhere}
     .lookup-form{padding:18px;display:flex;gap:10px;align-items:end;flex-wrap:wrap}
     .lookup-form label{display:grid;gap:6px;flex:1;min-width:230px}.lookup-form input{width:100%}
@@ -132,7 +133,7 @@ INDEX_HTML = r"""<!doctype html>
         <label for="analyticsDateTo">По дату включительно<input id="analyticsDateTo" class="search" type="date" required></label>
         <button class="btn primary" type="submit">Показать график</button>
       </form>
-      <p class="lookup-help">По опубликованным еженедельным финансовым отчётам, по дате операции (МСК). «К перечислению за товар» уже учитывает комиссию WB и платёжные услуги; возвраты уменьшают сумму. Логистика, хранение и другие отдельные расходы не вычитаются. Это начисление, а не подтверждение банковского перевода. Свежие продажи появляются после публикации отчёта.</p>
+      <p class="lookup-help">Количество — выкупы и возвраты из опубликованных еженедельных финансовых отчётов, по дате операции (МСК), а не число заказов из воронки WB. Эти показатели нельзя сравнивать напрямую: заказы учитываются отдельно от выкупов и могут относиться к другим датам. «К перечислению за товар» уже учитывает комиссию WB и платёжные услуги; возвраты уменьшают сумму. Логистика, хранение и другие отдельные расходы не вычитаются. Это начисление, а не подтверждение банковского перевода. Свежие продажи появляются после публикации отчёта.</p>
       <div id="analyticsBody" class="lookup-body" aria-live="polite"></div>
     </div>
   </section>
@@ -146,7 +147,7 @@ INDEX_HTML = r"""<!doctype html>
         <button class="btn primary" type="submit">Рассчитать</button>
       </form>
       <div class="cost-editor"><label for="unitCost">Себестоимость одной штуки, ₽<input id="unitCost" class="search" type="number" min="0" max="999999999.99" step="0.01" inputmode="decimal" placeholder="Не задана"></label><button class="btn" id="saveUnitCost" type="button">Сохранить себестоимость</button><span class="sub" id="unitCostStatus" aria-live="polite"></span></div>
-      <p class="lookup-help">Расчёт: начисление WB за товар минус расходы WB и себестоимость чистых продаж (продажи минус возвраты). Учитываются логистика, хранение, штрафы, удержания, приёмка и перевыставленная логистика; доплаты WB прибавляются. Комиссия и платёжные услуги уже вычтены в поле WB «К перечислению». Общие расходы без артикула не распределяются. Уценка/брак, который нельзя вернуть в продажу, может требовать отдельной корректировки себестоимости: финансовый отчёт не сообщает, пригоден ли возвращённый товар.</p>
+      <p class="lookup-help">Расчёт: начисление WB за товар минус расходы WB и себестоимость чистых выкупов (выкупы минус возвраты). Количество — по дате операции из финансового отчёта, это не число оформленных заказов из воронки WB. Учитываются логистика, хранение, штрафы, удержания, приёмка и перевыставленная логистика; доплаты WB прибавляются. Комиссия и платёжные услуги уже вычтены в поле WB «К перечислению». Общие расходы без артикула не распределяются. Уценка/брак, который нельзя вернуть в продажу, может требовать отдельной корректировки себестоимости: финансовый отчёт не сообщает, пригоден ли возвращённый товар.</p>
       <div id="unitBody" class="lookup-body" aria-live="polite"></div>
     </div>
   </section>
@@ -261,13 +262,13 @@ function renderAnalytics(data) {
   if (!data.sku) html += '<div class="empty">Выберите артикул товара.</div>';
   else if (!data.ready) html += '<div class="empty">Финансовые данные пока не получены. Нулевые значения не подставляются.</div>';
   else {
-    html += '<div class="cards analytics-summary"><div class="card"><span>Продано</span><strong>'+esc(data.totals.sales)+' шт.</strong></div>'+
+    html += '<div class="cards analytics-summary"><div class="card"><span>Выкуплено по фин. отчёту</span><strong>'+esc(data.totals.sales)+' шт.</strong></div>'+
       '<div class="card"><span>Возвраты</span><strong>'+esc(data.totals.returns)+' шт.</strong></div>'+
       '<div class="card"><span>К перечислению за товар</span><strong>'+esc(rubles(data.totals.net))+'</strong></div></div>';
     if (!data.has_rows) html += '<div class="notice">В опубликованных отчётах за период нет операций по этому артикулу. Свежие продажи ещё могут не попасть в отчёт.</div>';
     html += salesChart(data.points);
-    html += '<details><summary>Данные по дням</summary><div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Дата операции</th><th>Продано, шт.</th><th>Возвраты, шт.</th><th>К перечислению, ₽</th></tr></thead><tbody>'+
-      data.points.map(p => '<tr><td>'+esc(p.date)+'</td><td>'+esc(p.sales)+'</td><td>'+esc(p.returns)+'</td><td>'+esc(rubles(p.net))+'</td></tr>').join('')+'</tbody></table></div></details>';
+    html += '<details><summary>Данные по дням</summary><div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Дата операции</th><th>Выкупы, шт.</th><th>Возвраты, шт.</th><th>К перечислению, ₽</th></tr></thead><tbody>'+
+      data.points.map(p => '<tr><td>'+esc(p.date)+'</td><td>'+esc(p.sales)+'</td><td>'+esc(p.returns)+'</td><td>'+esc(rubles(p.net))+'</td></tr>').join('')+'</tbody><tfoot><tr class="total-row"><th>Итого за период</th><td>'+esc(data.totals.sales)+'</td><td>'+esc(data.totals.returns)+'</td><td>'+esc(rubles(data.totals.net))+'</td></tr></tfoot></table></div></details>';
   }
   document.getElementById('analyticsBody').innerHTML = html;
 }
@@ -300,14 +301,14 @@ function renderUnitEconomics(data) {
   else if(!data.ready) html+='<div class="empty">Данные за период ещё не получены. Нулевые значения не подставляются.</div>';
   else {
     const e=data.economics, c=data.cost_totals;
-    html+='<div class="cards analytics-summary"><div class="card"><span>Чистые продажи</span><strong>'+esc(e.net_units)+' шт.</strong></div><div class="card"><span>Себестоимость продаж</span><strong>'+(e.cogs===null?'—':esc(rubles(e.cogs)))+'</strong></div><div class="card"><span>Расходы WB по артикулу</span><strong>'+esc(rubles(e.wb_charges))+'</strong></div><div class="card"><span>Прибыль после WB и себестоимости</span><strong>'+(e.profit===null?'—':esc(rubles(e.profit)))+'</strong></div><div class="card"><span>Прибыль на штуку</span><strong>'+(e.profit_per_unit===null?'—':esc(rubles(e.profit_per_unit)))+'</strong></div><div class="card"><span>Доходность на себестоимость</span><strong>'+(e.roi_percent===null?'—':esc(e.roi_percent)+'%')+'</strong></div></div>';
+    html+='<div class="cards analytics-summary"><div class="card"><span>Чистые выкупы</span><strong>'+esc(e.net_units)+' шт.</strong></div><div class="card"><span>Себестоимость чистых выкупов</span><strong>'+(e.cogs===null?'—':esc(rubles(e.cogs)))+'</strong></div><div class="card"><span>Расходы WB по артикулу</span><strong>'+esc(rubles(e.wb_charges))+'</strong></div><div class="card"><span>Прибыль после WB и себестоимости</span><strong>'+(e.profit===null?'—':esc(rubles(e.profit)))+'</strong></div><div class="card"><span>Прибыль на штуку</span><strong>'+(e.profit_per_unit===null?'—':esc(rubles(e.profit_per_unit)))+'</strong></div><div class="card"><span>Доходность на себестоимость</span><strong>'+(e.roi_percent===null?'—':esc(e.roi_percent)+'%')+'</strong></div></div>';
     if(data.unit_cost===null)html+='<div class="notice">Укажите и сохраните себестоимость выше: без неё нельзя рассчитать итоговую прибыль и доходность.</div>';
     if(!data.has_rows)html+='<div class="notice">В опубликованном отчёте нет операций по артикулу. Подождите появления отчёта WB.</div>';
     html+='<div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Показатель за период</th><th>Сумма, ₽</th></tr></thead><tbody>'+[
-      ['К перечислению за товар',data.totals.net],['Логистика',c.delivery],['Хранение',c.storage],['Штрафы',c.penalties],['Прочие удержания',c.deductions],['Приёмка',c.acceptance],['Перевыставленная логистика',c.rebill_logistics],['Доплаты WB',c.additional_payments],['Себестоимость ('+e.net_units+' шт.)',e.cogs],['Итоговая прибыль',e.profit]
-    ].map(([label,value])=>'<tr><td>'+esc(label)+'</td><td>'+(value===null?'—':esc(rubles(value)))+'</td></tr>').join('')+'</tbody></table></div>';
-    html+='<details><summary>Данные по дням и начислениям</summary><div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Дата</th><th>Продажи</th><th>Возвраты</th><th>К перечислению</th><th>Логистика</th><th>Перевыставленная логистика</th><th>Хранение</th><th>Штрафы</th><th>Удержания</th><th>Приёмка</th><th>Доплаты</th></tr></thead><tbody>'+data.points.map((p,i)=>{const x=data.costs[i];return '<tr><td>'+esc(p.date)+'</td><td>'+esc(p.sales)+'</td><td>'+esc(p.returns)+'</td><td>'+esc(rubles(p.net))+'</td><td>'+esc(rubles(x.delivery))+'</td><td>'+esc(rubles(x.rebill_logistics))+'</td><td>'+esc(rubles(x.storage))+'</td><td>'+esc(rubles(x.penalties))+'</td><td>'+esc(rubles(x.deductions))+'</td><td>'+esc(rubles(x.acceptance))+'</td><td>'+esc(rubles(x.additional_payments))+'</td></tr>';}).join('')+'</tbody></table></div></details>';
-    if(data.cost_reasons.length)html+='<details><summary>Штрафы и удержания по причинам из отчёта WB</summary><div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Операция / причина</th><th>Сумма, ₽</th></tr></thead><tbody>'+data.cost_reasons.map(x=>'<tr><td>'+esc(x.reason)+'</td><td>'+esc(rubles(x.amount))+'</td></tr>').join('')+'</tbody></table></div></details>';
+      ['К перечислению за товар',data.totals.net],['Логистика',c.delivery],['Хранение',c.storage],['Штрафы',c.penalties],['Прочие удержания',c.deductions],['Приёмка',c.acceptance],['Перевыставленная логистика',c.rebill_logistics],['Доплаты WB',c.additional_payments],['Себестоимость ('+e.net_units+' шт.)',e.cogs]
+    ].map(([label,value])=>'<tr><td>'+esc(label)+'</td><td>'+(value===null?'—':esc(rubles(value)))+'</td></tr>').join('')+'</tbody><tfoot><tr class="total-row"><th>Итого прибыль</th><td>'+(e.profit===null?'—':esc(rubles(e.profit)))+'</td></tr></tfoot></table></div>';
+    html+='<details><summary>Данные по дням и начислениям</summary><div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Дата</th><th>Выкупы</th><th>Возвраты</th><th>К перечислению</th><th>Логистика</th><th>Перевыставленная логистика</th><th>Хранение</th><th>Штрафы</th><th>Удержания</th><th>Приёмка</th><th>Доплаты</th></tr></thead><tbody>'+data.points.map((p,i)=>{const x=data.costs[i];return '<tr><td>'+esc(p.date)+'</td><td>'+esc(p.sales)+'</td><td>'+esc(p.returns)+'</td><td>'+esc(rubles(p.net))+'</td><td>'+esc(rubles(x.delivery))+'</td><td>'+esc(rubles(x.rebill_logistics))+'</td><td>'+esc(rubles(x.storage))+'</td><td>'+esc(rubles(x.penalties))+'</td><td>'+esc(rubles(x.deductions))+'</td><td>'+esc(rubles(x.acceptance))+'</td><td>'+esc(rubles(x.additional_payments))+'</td></tr>';}).join('')+'</tbody><tfoot><tr class="total-row"><th>Итого за период</th><td>'+esc(data.totals.sales)+'</td><td>'+esc(data.totals.returns)+'</td><td>'+esc(rubles(data.totals.net))+'</td><td>'+esc(rubles(c.delivery))+'</td><td>'+esc(rubles(c.rebill_logistics))+'</td><td>'+esc(rubles(c.storage))+'</td><td>'+esc(rubles(c.penalties))+'</td><td>'+esc(rubles(c.deductions))+'</td><td>'+esc(rubles(c.acceptance))+'</td><td>'+esc(rubles(c.additional_payments))+'</td></tr></tfoot></table></div></details>';
+    if(data.cost_reasons.length)html+='<details><summary>Штрафы и удержания по причинам из отчёта WB</summary><div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Операция / причина</th><th>Сумма, ₽</th></tr></thead><tbody>'+data.cost_reasons.map(x=>'<tr><td>'+esc(x.reason)+'</td><td>'+esc(rubles(x.amount))+'</td></tr>').join('')+'</tbody><tfoot><tr class="total-row"><th>Итого по причинам</th><td>'+esc(rubles(data.cost_reasons.reduce((sum,x)=>sum+Number(x.amount),0)))+'</td></tr></tfoot></table></div></details>';
   }
   document.getElementById('unitBody').innerHTML=html;
 }
@@ -367,12 +368,12 @@ function salesChart(allPoints) {
   const dateLabels=new Set(Array.from({length:dateLabelCount},(_,label)=>
     dateLabelCount===1 ? 0 : Math.round(label*(points.length-1)/(dateLabelCount-1))));
   points.forEach((p,i)=>{
-    const tip=p.date+' · Продано: '+p.sales+' · Возвраты: '+p.returns+' · К перечислению: '+rubles(p.net);
+    const tip=p.date+' · Выкупы: '+p.sales+' · Возвраты: '+p.returns+' · К перечислению: '+rubles(p.net);
     svg+='<circle class="chart-dot" cx="'+x(i)+'" cy="'+yCash(Number(p.net))+'" r="4"/>';
     if (dateLabels.has(i)) svg+='<text text-anchor="middle" x="'+x(i)+'" y="314">'+esc(p.date.slice(5).split('-').reverse().join('.'))+'</text>';
     svg+='<rect tabindex="0" class="chart-hit" data-chart-tip="'+esc(tip)+'" aria-label="'+esc(tip)+'" x="'+(left+i*width/points.length)+'" y="'+top+'" width="'+width/points.length+'" height="335"><title>'+esc(tip)+'</title></rect>';
   });
-  return notice+'<p class="chart-legend"><span>■ Продано, шт. — левая шкала</span><span>━ К перечислению, ₽ — правая шкала</span></p><div class="chart-wrap">'+svg+'</svg></div><p id="chartTooltip" class="sub" aria-live="polite">Наведите курсор на день, нажмите на него или выберите клавишей Tab, чтобы увидеть продажи, возвраты и начисление. Плавная линия соединяет дневные значения.</p>';
+  return notice+'<p class="chart-legend"><span>■ Выкупы, шт. — левая шкала</span><span>━ К перечислению, ₽ — правая шкала</span></p><div class="chart-wrap">'+svg+'</svg></div><p id="chartTooltip" class="sub" aria-live="polite">Наведите курсор на день, нажмите на него или выберите клавишей Tab, чтобы увидеть выкупы, возвраты и начисление. Плавная линия соединяет дневные значения.</p>';
 }
 
 async function loadFbwOrders(poll=false) {

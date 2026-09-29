@@ -93,7 +93,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
-        self.assertEqual(await response.json(), {"version": "1.0.6"})
+        self.assertEqual(await response.json(), {"version": "1.0.7"})
 
     async def test_unit_economics_endpoint_and_cost_save(self):
         class FakeAnalytics:
