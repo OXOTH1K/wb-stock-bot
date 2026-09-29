@@ -137,6 +137,19 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.match(element('analyticsBody').innerHTML, /правая шкала/);
   assert.match(element('analyticsBody').innerHTML, /-123,45/);
   assert.ok(!/NaN|Infinity/.test(element('analyticsBody').innerHTML));
+  context.result={sku:'SKU',products:[],date_from:'2026-09-20',date_to:'2026-09-21',ready:true,
+    syncing:false,error:'',updated_at:'',stale:false,has_rows:true,unit_cost:'10.00',
+    totals:{sales:2,returns:1,net:'150.00'},economics:{net_units:1,cogs:'10.00',wb_charges:'30.00',profit:'111.00',profit_per_unit:'111.00',roi_percent:'1110.00'},
+    cost_totals:{delivery:'10',penalties:'3',storage:'2',deductions:'4',acceptance:'5',rebill_logistics:'6',additional_payments:'1'},
+    costs:[{delivery:'10',penalties:'3',storage:'2',deductions:'4',acceptance:'5',rebill_logistics:'6',additional_payments:'1'}],
+    points:[{date:'2026-09-20',sales:2,returns:1,net:'150.00'}],cost_reasons:[{reason:malicious,amount:'7.00'}]};
+  vm.runInContext('renderUnitEconomics(result)',context);
+  assert.match(element('unitBody').innerHTML,/Итоговая прибыль/);
+  assert.match(element('unitBody').innerHTML,/Штрафы и удержания по причинам/);
+  assert.ok(!element('unitBody').innerHTML.includes('<img'));
+  context.result={...context.result,unit_cost:null,economics:{...context.result.economics,cogs:null,profit:null,profit_per_unit:null,roi_percent:null}};
+  vm.runInContext('renderUnitEconomics(result)',context);
+  assert.match(element('unitBody').innerHTML,/нельзя рассчитать итоговую прибыль/);
   context.result={...analytics,ready:false,error:malicious,points:[]};
   vm.runInContext('renderAnalytics(result)', context);
   assert.ok(!element('analyticsBody').innerHTML.includes('<svg'));

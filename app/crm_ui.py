@@ -64,6 +64,7 @@ INDEX_HTML = r"""<!doctype html>
     .analytics-summary .card span{display:block;color:var(--muted);font-size:13px;margin-bottom:8px}.analytics-summary .card strong{display:block;font-size:24px}
     .detail-toolbar{padding:18px}.lookup-form select{width:100%;min-height:40px}
     .app-footer{text-align:center;color:var(--muted);font-size:12px;padding:22px 0 4px}
+    .cost-editor{display:flex;gap:8px;align-items:end;flex-wrap:wrap;padding:0 18px 18px}.cost-editor label{display:grid;gap:6px}.cost-editor input{width:180px}
   </style>
 </head>
 <body>
@@ -82,6 +83,7 @@ INDEX_HTML = r"""<!doctype html>
     <button class="btn" id="lookupTab" role="tab" aria-controls="lookupView" aria-selected="false">Поиск заказа WB</button>
     <button class="btn" id="fbwTab" role="tab" aria-controls="fbwView" aria-selected="false">Заказы FBW</button>
     <button class="btn" id="analyticsTab" role="tab" aria-controls="analyticsView" aria-selected="false">Продажи WB</button>
+    <button class="btn" id="unitTab" role="tab" aria-controls="unitView" aria-selected="false">Юнит-экономика WB</button>
   </nav>
   <section id="inventoryView" role="tabpanel" aria-labelledby="inventoryTab">
     <div id="inventoryCards" class="cards"></div>
@@ -134,6 +136,20 @@ INDEX_HTML = r"""<!doctype html>
       <div id="analyticsBody" class="lookup-body" aria-live="polite"></div>
     </div>
   </section>
+  <section id="unitView" role="tabpanel" aria-labelledby="unitTab" hidden>
+    <div class="panel">
+      <div class="panel-head"><div><h2>Юнит-экономика WB</h2><div class="sub">Начисления и расходы по финансовым отчётам · FBW и FBS</div></div></div>
+      <form id="unitForm" class="lookup-form">
+        <label for="unitSku">Артикул<select id="unitSku" class="search"><option value="">Загрузка списка товаров…</option></select></label>
+        <label for="unitDateFrom">С даты<input id="unitDateFrom" class="search" type="date" required></label>
+        <label for="unitDateTo">По дату включительно<input id="unitDateTo" class="search" type="date" required></label>
+        <button class="btn primary" type="submit">Рассчитать</button>
+      </form>
+      <div class="cost-editor"><label for="unitCost">Себестоимость одной штуки, ₽<input id="unitCost" class="search" type="number" min="0" max="999999999.99" step="0.01" inputmode="decimal" placeholder="Не задана"></label><button class="btn" id="saveUnitCost" type="button">Сохранить себестоимость</button><span class="sub" id="unitCostStatus" aria-live="polite"></span></div>
+      <p class="lookup-help">Расчёт: начисление WB за товар минус расходы WB и себестоимость чистых продаж (продажи минус возвраты). Учитываются логистика, хранение, штрафы, удержания, приёмка и перевыставленная логистика; доплаты WB прибавляются. Комиссия и платёжные услуги уже вычтены в поле WB «К перечислению». Общие расходы без артикула не распределяются. Уценка/брак, который нельзя вернуть в продажу, может требовать отдельной корректировки себестоимости: финансовый отчёт не сообщает, пригоден ли возвращённый товар.</p>
+      <div id="unitBody" class="lookup-body" aria-live="polite"></div>
+    </div>
+  </section>
   <footer class="app-footer">Текущая версия: <span id="appVersion">Загрузка…</span></footer>
 </div>
 
@@ -143,7 +159,7 @@ let activeView = 'inventory', lookupSequence = 0, lookupTimer = null;
 let fbwSequence = 0, fbwTimer = null, fbwNeedsPoll = false;
 function showView(view) {
   activeView = view;
-  for (const name of ['inventory','lookup','fbw','analytics']) {
+  for (const name of ['inventory','lookup','fbw','analytics','unit']) {
     document.getElementById(name+'View').hidden = name !== view;
     document.getElementById(name+'Tab').setAttribute('aria-selected', String(name === view));
   }
@@ -157,11 +173,14 @@ function showView(view) {
   else { clearTimeout(fbwTimer); fbwSequence++; }
   if (view === 'analytics') loadAnalytics();
   else {clearTimeout(analyticsTimer); analyticsSequence++;}
+  if (view === 'unit') loadUnitEconomics();
+  else {clearTimeout(unitTimer); unitSequence++;}
 }
 function refreshView() {
   if (activeView === 'inventory') loadInventory();
   else if (activeView === 'fbw') {if (fbwOrderNumber) openFbwOrder(fbwOrderNumber,true); else loadFbwOrders();}
   else if (activeView === 'analytics') loadAnalytics();
+  else if (activeView === 'unit') loadUnitEconomics();
   else lookupOrder();
 }
 function displayDate(value) {
@@ -213,6 +232,7 @@ function backToFbw() {
   if (fbwNeedsPoll) fbwTimer = setTimeout(() => loadFbwOrders(true), 5000);
 }
 let analyticsSequence = 0, analyticsTimer = null;
+let unitSequence = 0, unitTimer = null;
 const rubles = value => Number(value).toLocaleString('ru-RU', {minimumFractionDigits:2, maximumFractionDigits:2})+' ₽';
 async function loadAnalytics(poll=false) {
   if (!document.getElementById('analyticsForm').reportValidity()) return;
@@ -250,6 +270,57 @@ function renderAnalytics(data) {
       data.points.map(p => '<tr><td>'+esc(p.date)+'</td><td>'+esc(p.sales)+'</td><td>'+esc(p.returns)+'</td><td>'+esc(rubles(p.net))+'</td></tr>').join('')+'</tbody></table></div></details>';
   }
   document.getElementById('analyticsBody').innerHTML = html;
+}
+async function loadUnitEconomics(poll=false) {
+  const form=document.getElementById('unitForm');
+  if (!form.reportValidity()) return;
+  const sequence=++unitSequence; clearTimeout(unitTimer);
+  const from=document.getElementById('unitDateFrom').value, to=document.getElementById('unitDateTo').value;
+  const sku=document.getElementById('unitSku').value;
+  if (from>to) {setError('unitBody','Дата начала не должна быть позже даты окончания.');return;}
+  if (!poll) document.getElementById('unitBody').innerHTML='<div class="spinner">Загружаю финансовый отчёт WB…</div>';
+  try {
+    const data=await api('/api/wb/unit-economics?'+new URLSearchParams({date_from:from,date_to:to,sku}));
+    if(sequence!==unitSequence)return;
+    const select=document.getElementById('unitSku');
+    select.innerHTML='<option value="">Выберите артикул</option>'+data.products.map(p=>'<option value="'+esc(p.sku)+'">'+esc(p.sku)+' — '+esc(p.title)+'</option>').join('');
+    select.value=sku;
+    const cost=document.getElementById('unitCost');
+    if(document.activeElement!==cost) cost.value=data.unit_cost ?? '';
+    renderUnitEconomics(data);
+    if(data.syncing && activeView==='unit') unitTimer=setTimeout(()=>loadUnitEconomics(true),5000);
+  } catch(e) {if(sequence===unitSequence)setError('unitBody',e);}
+}
+function renderUnitEconomics(data) {
+  let html='<p><strong>'+esc(data.date_from)+' — '+esc(data.date_to)+'</strong> · FBW и FBS · МСК</p>';
+  if(data.error)html+='<div class="notice">'+esc(data.error)+'</div>';
+  if(data.syncing)html+='<p class="source-status">Финансовый отчёт загружается; данные обновятся автоматически.</p>';
+  if(data.updated_at)html+='<p class="source-status">Загружено: '+esc(displayDate(data.updated_at))+(data.stale?' · сохранённые данные, требуется обновление':'')+'</p>';
+  if(!data.sku) html+='<div class="empty">Выберите артикул товара.</div>';
+  else if(!data.ready) html+='<div class="empty">Данные за период ещё не получены. Нулевые значения не подставляются.</div>';
+  else {
+    const e=data.economics, c=data.cost_totals;
+    html+='<div class="cards analytics-summary"><div class="card"><span>Чистые продажи</span><strong>'+esc(e.net_units)+' шт.</strong></div><div class="card"><span>Себестоимость продаж</span><strong>'+(e.cogs===null?'—':esc(rubles(e.cogs)))+'</strong></div><div class="card"><span>Расходы WB по артикулу</span><strong>'+esc(rubles(e.wb_charges))+'</strong></div><div class="card"><span>Прибыль после WB и себестоимости</span><strong>'+(e.profit===null?'—':esc(rubles(e.profit)))+'</strong></div><div class="card"><span>Прибыль на штуку</span><strong>'+(e.profit_per_unit===null?'—':esc(rubles(e.profit_per_unit)))+'</strong></div><div class="card"><span>Доходность на себестоимость</span><strong>'+(e.roi_percent===null?'—':esc(e.roi_percent)+'%')+'</strong></div></div>';
+    if(data.unit_cost===null)html+='<div class="notice">Укажите и сохраните себестоимость выше: без неё нельзя рассчитать итоговую прибыль и доходность.</div>';
+    if(!data.has_rows)html+='<div class="notice">В опубликованном отчёте нет операций по артикулу. Подождите появления отчёта WB.</div>';
+    html+='<div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Показатель за период</th><th>Сумма, ₽</th></tr></thead><tbody>'+[
+      ['К перечислению за товар',data.totals.net],['Логистика',c.delivery],['Хранение',c.storage],['Штрафы',c.penalties],['Прочие удержания',c.deductions],['Приёмка',c.acceptance],['Перевыставленная логистика',c.rebill_logistics],['Доплаты WB',c.additional_payments],['Себестоимость ('+e.net_units+' шт.)',e.cogs],['Итоговая прибыль',e.profit]
+    ].map(([label,value])=>'<tr><td>'+esc(label)+'</td><td>'+(value===null?'—':esc(rubles(value)))+'</td></tr>').join('')+'</tbody></table></div>';
+    html+='<details><summary>Данные по дням и начислениям</summary><div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Дата</th><th>Продажи</th><th>Возвраты</th><th>К перечислению</th><th>Логистика</th><th>Перевыставленная логистика</th><th>Хранение</th><th>Штрафы</th><th>Удержания</th><th>Приёмка</th><th>Доплаты</th></tr></thead><tbody>'+data.points.map((p,i)=>{const x=data.costs[i];return '<tr><td>'+esc(p.date)+'</td><td>'+esc(p.sales)+'</td><td>'+esc(p.returns)+'</td><td>'+esc(rubles(p.net))+'</td><td>'+esc(rubles(x.delivery))+'</td><td>'+esc(rubles(x.rebill_logistics))+'</td><td>'+esc(rubles(x.storage))+'</td><td>'+esc(rubles(x.penalties))+'</td><td>'+esc(rubles(x.deductions))+'</td><td>'+esc(rubles(x.acceptance))+'</td><td>'+esc(rubles(x.additional_payments))+'</td></tr>';}).join('')+'</tbody></table></div></details>';
+    if(data.cost_reasons.length)html+='<details><summary>Штрафы и удержания по причинам из отчёта WB</summary><div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Операция / причина</th><th>Сумма, ₽</th></tr></thead><tbody>'+data.cost_reasons.map(x=>'<tr><td>'+esc(x.reason)+'</td><td>'+esc(rubles(x.amount))+'</td></tr>').join('')+'</tbody></table></div></details>';
+  }
+  document.getElementById('unitBody').innerHTML=html;
+}
+async function saveUnitCost() {
+  const sku=document.getElementById('unitSku').value, value=document.getElementById('unitCost').value;
+  const status=document.getElementById('unitCostStatus');
+  if(!sku){status.textContent='Сначала выберите артикул.';return;}
+  if(value==='' || Number(value)<0){status.textContent='Введите себестоимость от 0 рублей.';return;}
+  try {
+    await api('/api/wb/unit-cost',{method:'POST',body:JSON.stringify({sku,cost:value})});
+    status.textContent='Себестоимость сохранена.';
+    await loadUnitEconomics();
+  } catch(e){status.textContent=e.message;}
 }
 // Horizontal tangents give a smooth curve through exact daily values, without overshoot.
 function smoothChartPath(coords) {
@@ -500,7 +571,7 @@ async function setAvailable(sku, key) {
 document.getElementById('refreshButton').addEventListener('click', refreshView);
 document.getElementById('crmUpdateButton').addEventListener('click', installCRMUpdate);
 document.getElementById('crmCheckUpdatesButton').addEventListener('click', () => checkCRMUpdate(true));
-for (const view of ['inventory','lookup','fbw','analytics']) document.getElementById(view+'Tab').addEventListener('click', () => showView(view));
+for (const view of ['inventory','lookup','fbw','analytics','unit']) document.getElementById(view+'Tab').addEventListener('click', () => showView(view));
 document.getElementById('inventoryBody').addEventListener('click', event => {
   const button = event.target.closest('button[data-stock-action]');
   if (!button) return;
@@ -513,6 +584,12 @@ document.getElementById('fbwBack').addEventListener('click', backToFbw);
 document.getElementById('analyticsDateFrom').value = moscowDay(29);
 document.getElementById('analyticsDateTo').value = moscowDay();
 document.getElementById('analyticsForm').addEventListener('submit', event => {event.preventDefault(); loadAnalytics();});
+document.getElementById('unitDateFrom').value = moscowDay(29);
+document.getElementById('unitDateTo').value = moscowDay();
+document.getElementById('unitForm').addEventListener('submit', event => {event.preventDefault(); loadUnitEconomics();});
+document.getElementById('saveUnitCost').addEventListener('click', saveUnitCost);
+document.getElementById('unitSku').addEventListener('change', () => {document.getElementById('unitCost').value='';document.getElementById('unitCostStatus').textContent='';loadUnitEconomics();});
+for (const id of ['unitDateFrom','unitDateTo','unitSku']) document.getElementById(id).addEventListener('input',()=>{clearTimeout(unitTimer);unitSequence++;document.getElementById('unitBody').innerHTML='<div class="empty">Нажмите «Рассчитать» для выбранных параметров.</div>';});
 for (const id of ['analyticsDateFrom','analyticsDateTo','analyticsSku']) document.getElementById(id).addEventListener('input', () => {clearTimeout(analyticsTimer); analyticsSequence++; document.getElementById('analyticsBody').innerHTML = '<div class="empty">Нажмите «Показать график» для выбранных параметров.</div>';});
 for (const kind of ['pointerover','focusin','click']) document.getElementById('analyticsBody').addEventListener(kind, event => {const node=event.target.closest('[data-chart-tip]'); if(node) document.getElementById('chartTooltip').textContent=node.dataset.chartTip;});
 document.getElementById('fbwDateFrom').value = moscowDay(6);

@@ -148,6 +148,15 @@ class StateDB:
         )
         self.conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS wb_unit_cost (
+                sku TEXT PRIMARY KEY,
+                cost TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS crm_order_meta (
                 order_id INTEGER PRIMARY KEY,
                 assembled INTEGER NOT NULL DEFAULT 0,
@@ -1328,6 +1337,22 @@ class StateDB:
                     updated_at = excluded.updated_at
                 """,
                 (str(key), str(value), now),
+            )
+
+    def get_wb_unit_cost(self, sku: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT cost FROM wb_unit_cost WHERE sku = ?", (str(sku),)
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    def set_wb_unit_cost(self, sku: str, cost: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO wb_unit_cost(sku, cost, updated_at) VALUES (?, ?, ?)
+                   ON CONFLICT(sku) DO UPDATE SET cost=excluded.cost,
+                   updated_at=excluded.updated_at""",
+                (str(sku), str(cost), now),
             )
 
     def close(self) -> None:

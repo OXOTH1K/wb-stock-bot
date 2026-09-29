@@ -93,7 +93,30 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
-        self.assertEqual(await response.json(), {"version": "1.0.5"})
+        self.assertEqual(await response.json(), {"version": "1.0.6"})
+
+    async def test_unit_economics_endpoint_and_cost_save(self):
+        class FakeAnalytics:
+            def unit_economics_view(self, start, end, sku):
+                return {"date_from": start, "date_to": end, "sku": sku,
+                        "products": [], "ready": False, "unit_cost": None}
+        self.crm.sales_analytics = FakeAnalytics()
+        response = await self.client.get(
+            "/api/wb/unit-economics?date_from=2026-09-20&date_to=2026-09-21&sku=SKU"
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual((await response.json())["sku"], "SKU")
+        response = await self.client.post(
+            "/api/wb/unit-cost", json={"sku": "SKU", "cost": "12.5"}
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.db.get_wb_unit_cost("SKU"), "12.50")
+        for value in ("-1", "NaN", "1e4", "1.001", ""):
+            response = await self.client.post(
+                "/api/wb/unit-cost", json={"sku": "SKU", "cost": value}
+            )
+            self.assertEqual(response.status, 400)
 
     async def test_inventory_unions_wb_and_ozon_by_seller_sku(self):
         self.db.replace_channel_catalog(
@@ -263,6 +286,10 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('class="app-footer"', INDEX_HTML)
         self.assertIn('id="appVersion"', INDEX_HTML)
         self.assertIn("loadAppVersion();", INDEX_HTML)
+        self.assertIn('id="unitView"', INDEX_HTML)
+        self.assertIn('id="unitSku"', INDEX_HTML)
+        self.assertIn('id="unitCost"', INDEX_HTML)
+        self.assertIn("/api/wb/unit-economics?", INDEX_HTML)
         self.assertNotIn("WB заказы", INDEX_HTML)
         self.assertNotIn("OZON заказы", INDEX_HTML)
         self.assertIn('class="tabs"', INDEX_HTML)

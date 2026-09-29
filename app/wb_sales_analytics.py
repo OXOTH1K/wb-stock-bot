@@ -13,8 +13,19 @@ from .wb_order_lookup import MSK
 log = logging.getLogger(__name__)
 URL = 'https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed'
 FIELDS = ['rrdId', 'rrDate', 'nmId', 'vendorCode', 'title', 'currency', 'docTypeName',
-          'sellerOperName', 'quantity', 'returnAmount', 'forPay']
-CACHE_VERSION = 'returns-v2'
+          'sellerOperName', 'quantity', 'returnAmount', 'forPay',
+          'deliveryService', 'penalty', 'paidStorage', 'deduction',
+          'paidAcceptance', 'rebillLogisticCost', 'additionalPayment', 'bonusTypeName']
+CACHE_VERSION = 'unit-economics-v1'
+COST_FIELDS = {
+    'delivery': 'deliveryService',
+    'penalties': 'penalty',
+    'storage': 'paidStorage',
+    'deductions': 'deduction',
+    'acceptance': 'paidAcceptance',
+    'rebill_logistics': 'rebillLogisticCost',
+    'additional_payments': 'additionalPayment',
+}
 
 
 def period(start: str, end: str) -> tuple[date, date]:
@@ -92,12 +103,39 @@ def aggregate(rows, start, end, products):
         if not sku:
             continue  # Account-wide costs do not belong to a product chart.
         title = str(row.get('title') or (product.title if product else '') or sku)
-        group = result.setdefault(sku, {'sku': sku, 'title': title, 'days': {}})
+        group = result.setdefault(sku, {'sku': sku, 'title': title, 'days': {}, 'costs': {}, 'reasons': {}})
         values = group['days'].setdefault(day, [0, 0, Decimal(0)])
         for i, value in enumerate(amounts(row)):
             values[i] += value
+        expenses = group['costs'].setdefault(day, {name: Decimal(0) for name in COST_FIELDS})
+        row_expenses = {}
+        for name, field in COST_FIELDS.items():
+            value = money(row, field) if row.get(field) is not None else Decimal(0)
+            expenses[name] += value
+            row_expenses[name] = value
+        charge_total = sum(
+            (value for name, value in row_expenses.items() if name != 'additional_payments'),
+            Decimal(0),
+        )
+        operation = str(row.get('sellerOperName') or '').strip()
+        reason = str(row.get('bonusTypeName') or '').strip()
+        reason_amount = row_expenses['penalties'] + row_expenses['deductions']
+        if not reason and operation not in {'', 'Продажа', 'Возврат'}:
+            reason = operation
+            reason_amount = charge_total
+        if reason and reason_amount:
+            by_day = group['reasons'].setdefault(day, {})
+            by_day[reason] = by_day.get(reason, Decimal(0)) + reason_amount
     for group in result.values():
         group['days'] = {day: [v[0], v[1], str(v[2])] for day, v in group['days'].items()}
+        group['costs'] = {
+            day: {name: str(value) for name, value in values.items()}
+            for day, values in group['costs'].items()
+        }
+        group['reasons'] = {
+            day: {reason: str(value) for reason, value in values.items()}
+            for day, values in group['reasons'].items()
+        }
     return result
 
 
@@ -130,12 +168,22 @@ class WBSalesAnalytics:
         catalog.update({k: v['title'] for k, v in groups.items() if k})
         selected = groups.get(sku, {}).get('days', {}) if sku else {}
         points = []
+        expenses_by_day = []
         totals = [0, 0, Decimal(0)]
+        expense_totals = {name: Decimal(0) for name in COST_FIELDS}
+        reason_totals = {}
         for offset in range((b - a).days + 1):
             day = (a + timedelta(days=offset)).isoformat()
             values = selected.get(day, [0, 0, '0'])
             sales, returns, credit = values[0], values[1], Decimal(values[2])
             points.append({'date': day, 'sales': sales, 'returns': returns, 'net': rub(credit)})
+            selected_costs = groups.get(sku, {}).get('costs', {}).get(day, {})
+            daily_costs = {name: Decimal(str(selected_costs.get(name, '0'))) for name in COST_FIELDS}
+            expenses_by_day.append({'date': day, **{name: rub(value) for name, value in daily_costs.items()}})
+            for name, value in daily_costs.items():
+                expense_totals[name] += value
+            for reason, value in groups.get(sku, {}).get('reasons', {}).get(day, {}).items():
+                reason_totals[reason] = reason_totals.get(reason, Decimal(0)) + Decimal(str(value))
             for i, value in enumerate((sales, returns, credit)):
                 totals[i] += value
         return {'sku': sku, 'products': [{'sku': k, 'title': v} for k, v in sorted(catalog.items())],
@@ -144,7 +192,39 @@ class WBSalesAnalytics:
                 'stale': bool(record and now - record[0] > 3600),
                 'updated_at': datetime.fromtimestamp(record[0], MSK).isoformat() if record else '',
                 'has_rows': bool(selected),
+                'costs': expenses_by_day,
+                'cost_totals': {name: rub(value) for name, value in expense_totals.items()},
+                'cost_reasons': [{'reason': reason, 'amount': rub(value)}
+                                 for reason, value in sorted(reason_totals.items())],
                 'totals': {'sales': totals[0], 'returns': totals[1], 'net': rub(totals[2])}}
+
+    def unit_economics_view(self, start, end, sku):
+        data = self.view(start, end, sku)
+        saved_cost = self.db.get_wb_unit_cost(sku) if sku else None
+        unit_cost = Decimal(saved_cost or '0')
+        net_units = data['totals']['sales'] - data['totals']['returns']
+        costs = {name: Decimal(value) for name, value in data['cost_totals'].items()}
+        charges = sum((costs[name] for name in COST_FIELDS if name != 'additional_payments'), Decimal(0))
+        cogs = unit_cost * net_units
+        profit = Decimal(data['totals']['net']) - charges + costs['additional_payments'] - cogs
+        if saved_cost is None:
+            cogs_value = profit_value = profit_per_unit = roi = None
+        else:
+            cogs_value = rub(cogs)
+            profit_value = rub(profit)
+            profit_per_unit = rub(profit / net_units) if net_units > 0 else None
+            roi = rub(profit / cogs * 100) if cogs > 0 else None
+        return data | {
+            'unit_cost': saved_cost,
+            'economics': {
+                'net_units': net_units,
+                'cogs': cogs_value,
+                'wb_charges': rub(charges),
+                'profit': profit_value,
+                'profit_per_unit': profit_per_unit,
+                'roi_percent': roi,
+            },
+        }
 
     async def refresh(self, start, end):
         cursor, rows = 0, []

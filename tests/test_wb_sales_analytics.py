@@ -20,6 +20,22 @@ def row(rid=1, **overrides):
 
 
 class CalculationTests(unittest.TestCase):
+    def test_unit_economics_include_item_linked_wb_charges_and_returns(self):
+        sale = row(quantity=2, forPay='200', deliveryService='10', paidStorage='2', penalty='3',
+                   deduction='4', paidAcceptance='5', rebillLogisticCost='6',
+                   additionalPayment='1', bonusTypeName='Штраф за отмену клиентом')
+        returned = row(2, docTypeName='Возврат', sellerOperName='Возврат',
+                       quantity=1, returnAmount=1, forPay='50')
+        result = aggregate([sale, returned], '2026-09-20', '2026-09-21', {})
+        self.assertEqual(result['SKU']['costs']['2026-09-20'], {
+            'delivery': '10', 'penalties': '3', 'storage': '2', 'deductions': '4',
+            'acceptance': '5', 'rebill_logistics': '6', 'additional_payments': '1',
+        })
+        self.assertEqual(result['SKU']['days']['2026-09-20'], [2, 1, '150'])
+        self.assertEqual(result['SKU']['reasons']['2026-09-20'], {
+            'Штраф за отмену клиентом': '7'
+        })
+
     def test_returns_commission_not_deducted_twice_and_expenses_excluded(self):
         sold = row(forPay='80.10', acquiringFee='10', ppvzSalesCommission='20',
                    deliveryService='15', paidStorage='5', deduction='9')
@@ -91,6 +107,27 @@ class FinanceLoadingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.view('2026-09-20','2026-09-22','OLD')['totals']['net'], '1.23')
         restarted = WBSalesAnalytics(self.wb, self.db, lambda: self.products)
         self.assertTrue(restarted.view('2026-09-20','2026-09-22','SKU')['ready'])
+
+    async def test_unit_economics_persists_cost_and_calculates_profit_after_returns_and_fees(self):
+        sale = row(quantity=2, forPay='200', deliveryService='10', paidStorage='2',
+                   penalty='3', deduction='4', paidAcceptance='5',
+                   rebillLogisticCost='6', additionalPayment='1',
+                   bonusTypeName='Штраф за отмену клиентом')
+        returned = row(2, docTypeName='Возврат', sellerOperName='Возврат',
+                       quantity=1, returnAmount=1, forPay='50')
+        self.wb._json.side_effect = [[sale, returned], None]
+        with patch('app.wb_sales_analytics.asyncio.sleep', new_callable=AsyncMock):
+            await self.service.refresh('2026-09-20', '2026-09-21')
+        self.db.set_wb_unit_cost('SKU', '12.50')
+        result = self.service.unit_economics_view('2026-09-20', '2026-09-21', 'SKU')
+        self.assertEqual(result['unit_cost'], '12.50')
+        self.assertEqual(result['cost_reasons'], [
+            {'reason': 'Штраф за отмену клиентом', 'amount': '7.00'}
+        ])
+        self.assertEqual(result['economics'], {
+            'net_units': 1, 'cogs': '12.50', 'wb_charges': '30.00',
+            'profit': '108.50', 'profit_per_unit': '108.50', 'roi_percent': '868.00',
+        })
 
     async def test_missing_snapshot_is_not_zero_and_requests_coalesce(self):
         for sku in ('SKU', 'OLD', 'SKU'):

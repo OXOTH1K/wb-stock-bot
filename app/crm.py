@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, TYPE_CHECKING
 
 from aiohttp import web
@@ -82,6 +84,8 @@ class CRMServer:
                 web.get("/api/wb/order-lookup", self.lookup_wb_order),
                 web.get("/api/wb/fbw-orders", self.fbw_orders),
                 web.get("/api/wb/sales-analytics", self.wb_sales_analytics),
+                web.get("/api/wb/unit-economics", self.wb_unit_economics),
+                web.post("/api/wb/unit-cost", self.set_wb_unit_cost),
                 web.get("/api/update", self.update_status),
                 web.post("/api/update", self.start_update),
             ]
@@ -157,6 +161,36 @@ class CRMServer:
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response(data)
+
+    async def wb_unit_economics(self, request: web.Request) -> web.Response:
+        if self.sales_analytics is None:
+            return web.json_response({"error": "Финансовые отчёты WB не подключены."}, status=503)
+        try:
+            data = self.sales_analytics.unit_economics_view(
+                request.query.get('date_from', ''), request.query.get('date_to', ''),
+                request.query.get('sku', '').strip(),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    async def set_wb_unit_cost(self, request: web.Request) -> web.Response:
+        data = await self._payload(request)
+        sku = str(data.get('sku') or '').strip()
+        raw_cost = data.get('cost')
+        if not sku or len(sku) > 200 or any(ord(char) < 32 for char in sku):
+            return web.json_response({"error": "Укажите корректный артикул."}, status=400)
+        if not isinstance(raw_cost, (str, int)) or isinstance(raw_cost, bool):
+            return web.json_response({"error": "Введите себестоимость числом, не меньше нуля."}, status=400)
+        value = str(raw_cost).strip().replace(',', '.')
+        if not re.fullmatch(r'(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,2})?', value):
+            return web.json_response({"error": "Себестоимость: от 0 до 999 999 999,99; максимум 2 знака после запятой."}, status=400)
+        try:
+            cost = Decimal(value).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        except InvalidOperation:
+            return web.json_response({"error": "Некорректная себестоимость."}, status=400)
+        self.db.set_wb_unit_cost(sku, str(cost))
+        return web.json_response({"sku": sku, "cost": str(cost)})
 
     async def update_status(self, request: web.Request) -> web.Response:
         if self.release_checker is None:
