@@ -139,7 +139,7 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.match(element('analyticsBody').innerHTML, /правая шкала/);
   assert.match(element('analyticsBody').innerHTML, /-123,45/);
   assert.match(element('analyticsBody').innerHTML, /Итого за период/);
-  assert.match(element('analyticsBody').innerHTML, /<tfoot>/);
+  assert.match(element('analyticsBody').innerHTML, /class="total-row"><th>Итого за период/);
   assert.ok(!/NaN|Infinity/.test(element('analyticsBody').innerHTML));
   context.result={sku:'SKU',products:[],date_from:'2026-09-20',date_to:'2026-09-21',ready:true,
     syncing:false,error:'',updated_at:'',stale:false,has_rows:true,unit_cost:'10.00',
@@ -152,6 +152,7 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.match(element('unitBody').innerHTML,/Итого прибыль/);
   assert.match(element('unitBody').innerHTML,/Итого за период/);
   assert.match(element('unitBody').innerHTML,/Итого по причинам/);
+  assert.equal((element('unitBody').innerHTML.match(/class="total-row"/g)||[]).length,3);
   assert.match(element('unitBody').innerHTML,/Штрафы и удержания по причинам/);
   assert.ok(!element('unitBody').innerHTML.includes('<img'));
   context.result={...context.result,unit_cost:null,economics:{...context.result.economics,cogs:null,profit:null,profit_per_unit:null,roi_percent:null}};
@@ -200,6 +201,8 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.match(page,/\.sales-chart\{width:100%;height:auto/);
   assert.match(page,/th\{[^}]*position:sticky/);
   assert.match(page,/\.fbw-table th\{position:sticky/);
+  assert.match(page,/\.fbw-table-wrap\{overflow:visible\}/);
+  assert.match(page,/\.fbw-table-wrap\{max-height:70vh;overflow:auto/);
 
   element('analyticsDateFrom').value='2026-09-20'; element('analyticsDateTo').value='2026-09-21'; element('analyticsSku').value='SKU';
   context.fetch=()=>new Promise(resolve=>{finishFirst=resolve;});
