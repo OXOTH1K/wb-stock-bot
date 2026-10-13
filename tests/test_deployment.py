@@ -75,6 +75,12 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('PathExists=$APP_DIR/data/crm-update.request', deploy)
         self.assertIn('ExecStartPre=/usr/bin/rm -f -- $APP_DIR/data/crm-update.request', deploy)
         self.assertIn('systemctl enable --now wb-stock-bot-crm-update.path', deploy)
+        self.assertIn('PathExists=$APP_DIR/data/crm-restart.request', deploy)
+        self.assertIn('ExecStartPre=/usr/bin/rm -f -- $APP_DIR/data/crm-restart.request', deploy)
+        self.assertIn('ExecStart=/usr/bin/systemctl restart $SERVICE.service', deploy)
+        self.assertIn('systemctl enable --now wb-stock-bot-crm-restart.path', deploy)
+        self.assertIn('NoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict', deploy)
+        self.assertIn('ReadWritePaths=$APP_DIR/data', deploy)
         self.assertIn('rm -f "$UPDATE_SUDOERS"', deploy)
         self.assertNotIn('NOPASSWD:', deploy)
 

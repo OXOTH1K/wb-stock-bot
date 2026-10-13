@@ -57,10 +57,13 @@ UPDATE_HELPER=/usr/local/lib/wb-stock-bot/crm-update-deploy.sh
 UPDATE_UNIT=/etc/systemd/system/wb-stock-bot-crm-update.service
 UPDATE_PATH_UNIT=/etc/systemd/system/wb-stock-bot-crm-update.path
 UPDATE_SUDOERS=/etc/sudoers.d/wb-stock-bot-crm-update
+RESTART_UNIT=/etc/systemd/system/wb-stock-bot-crm-restart.service
+RESTART_PATH_UNIT=/etc/systemd/system/wb-stock-bot-crm-restart.path
 DROPIN="/etc/systemd/system/$SERVICE.service.d/crm-security.conf"
 APP_CHANGED=0
 CONFIG_CHANGED=0
 UPDATE_CONFIG_CHANGED=0
+RESTART_CONFIG_CHANGED=0
 CADDY_NEW=0
 CADDY_WAS_ACTIVE=0
 SUCCESS=0
@@ -117,6 +120,15 @@ cleanup() {
       systemctl daemon-reload || true
       if [[ -f "$STAGE/update-path.old" ]]; then
         systemctl enable --now wb-stock-bot-crm-update.path || true
+      fi
+    fi
+    if [[ $RESTART_CONFIG_CHANGED == 1 ]]; then
+      systemctl disable --now wb-stock-bot-crm-restart.path >/dev/null 2>&1 || true
+      restore_file "$RESTART_UNIT" restart-unit.old
+      restore_file "$RESTART_PATH_UNIT" restart-path.old
+      systemctl daemon-reload || true
+      if [[ -f "$STAGE/restart-path.old" ]]; then
+        systemctl enable --now wb-stock-bot-crm-restart.path || true
       fi
     fi
     echo 'Python package upgrades and an installed Caddy package are retained; application data is not rolled back.' >&2
@@ -287,6 +299,40 @@ install -o root -g root -m 0644 "$STAGE/crm-update.path" "$UPDATE_PATH_UNIT"
 rm -f "$UPDATE_SUDOERS"
 systemctl daemon-reload
 systemctl enable --now wb-stock-bot-crm-update.path
+backup_file "$RESTART_UNIT" restart-unit.old
+backup_file "$RESTART_PATH_UNIT" restart-path.old
+RESTART_CONFIG_CHANGED=1
+cat > "$STAGE/crm-restart.service" <<EOF
+[Unit]
+Description=Restart the wb-stock-bot service on an authenticated CRM request
+
+[Service]
+Type=oneshot
+User=root
+ExecStartPre=/usr/bin/rm -f -- $APP_DIR/data/crm-restart.request
+ExecStart=/usr/bin/systemctl restart $SERVICE.service
+TimeoutStartSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$APP_DIR/data
+EOF
+install -o root -g root -m 0644 "$STAGE/crm-restart.service" "$RESTART_UNIT"
+cat > "$STAGE/crm-restart.path" <<EOF
+[Unit]
+Description=Watch for an authenticated CRM service restart request
+
+[Path]
+PathExists=$APP_DIR/data/crm-restart.request
+Unit=wb-stock-bot-crm-restart.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+install -o root -g root -m 0644 "$STAGE/crm-restart.path" "$RESTART_PATH_UNIT"
+systemctl daemon-reload
+systemctl enable --now wb-stock-bot-crm-restart.path
 if [[ $SETUP_CADDY == 1 ]]; then
   systemctl enable caddy
   if [[ $CADDY_DNS_CHANGED == 1 ]]; then

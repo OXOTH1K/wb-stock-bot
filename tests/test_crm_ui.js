@@ -7,6 +7,7 @@ assert.match(page,/а не число заказов из воронки WB/);
 assert.match(page,/Чистые выкупы/);
 assert.match(page,/>Выкупы WB<\/button>/);
 assert.match(page,/id="analyticsAllProducts" type="checkbox"/);
+assert.match(page,/id="restartBotButton"/);
 const source = page.match(/<script>([\s\S]*?)<\/script>/)[1];
 const nodes = new Map();
 function element(id) {
@@ -17,7 +18,7 @@ function element(id) {
   return nodes.get(id);
 }
 const context = vm.createContext({document:{getElementById:element}, console, URLSearchParams,
-  setTimeout:()=>1, clearTimeout:()=>{}, AbortController,
+  setTimeout:()=>1, clearTimeout:()=>{}, AbortController, window:{confirm:()=>true},
   fetch:async()=>({ok:true, text:async()=>JSON.stringify({items:[], totals:{}})})});
 vm.runInContext(source, context);
 const empty = {coverage:'Test', sources:[], items:[], syncing:false, partial:false};
@@ -282,5 +283,20 @@ assert.equal(element('inventorySearch').value, 'existing search');
   assert.equal(element('crmUpdateButton').hidden, true);
   assert.equal(element('crmCheckUpdatesButton').hidden, false);
   assert.match(page,/id="crmUpdateButton"[^>]*hidden/);
+  context.fetch = async (url, options) => {
+    updateRequests.push({url,options});
+    return {ok:true,text:async()=>JSON.stringify({message:'Сервис бота перезапускается.'})};
+  };
+  let restartAsked=false;
+  context.window.confirm=()=>{restartAsked=true;return false;};
+  const beforeRestart=updateRequests.length;
+  await vm.runInContext('restartBotService()',context);
+  assert.equal(restartAsked,true);
+  assert.equal(updateRequests.length,beforeRestart);
+  context.window.confirm=()=>true;
+  await vm.runInContext('restartBotService()',context);
+  assert.equal(updateRequests.at(-1).url,'/api/service/restart');
+  assert.equal(updateRequests.at(-1).options.method,'POST');
+  assert.equal(element('restartBotStatus').textContent,'Сервис бота перезапускается.');
   console.log('CRM UI: lookup and FBW rendering, escaping, tabs, navigation, dates and request races passed');
 })().catch(error => { console.error(error); process.exitCode=1; });

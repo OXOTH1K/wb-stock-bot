@@ -11,6 +11,7 @@ from aiohttp import web
 from .config import Settings
 from .crm_ui import INDEX_HTML
 from .crm_security import CRMAccessPolicy
+from .crm_restart import CRMServiceRestarter
 from .crm_updates import CRMReleaseChecker
 from .db import StateDB
 from .service import StockMonitorService
@@ -34,6 +35,7 @@ class CRMServer:
         order_lookup: WBOrderLookup | None = None,
         sales_analytics: WBSalesAnalytics | None = None,
         release_checker: CRMReleaseChecker | None = None,
+        service_restarter: CRMServiceRestarter | None = None,
     ):
         self.settings = settings
         self.service = service
@@ -42,6 +44,7 @@ class CRMServer:
         self.order_lookup = order_lookup
         self.sales_analytics = sales_analytics
         self.release_checker = release_checker
+        self.service_restarter = service_restarter or CRMServiceRestarter()
         self.security = CRMAccessPolicy(settings)
         try:
             self._allowed_networks = tuple(
@@ -88,6 +91,7 @@ class CRMServer:
                 web.post("/api/wb/unit-cost", self.set_wb_unit_cost),
                 web.get("/api/update", self.update_status),
                 web.post("/api/update", self.start_update),
+                web.post("/api/service/restart", self.restart_service),
             ]
         )
 
@@ -212,6 +216,11 @@ class CRMServer:
             return web.json_response({'error': 'Некорректная версия релиза.'}, status=400)
         started, message = await self.release_checker.trigger(tag)
         return web.json_response({'message': message}, status=202 if started else 409)
+
+    async def restart_service(self, request: web.Request) -> web.Response:
+        started, message = self.service_restarter.trigger()
+        return web.json_response({'message': message}, status=202 if started else 503,
+                                 headers={'Cache-Control': 'no-store'})
 
     async def health(self, request: web.Request) -> web.Response:
         return web.json_response(

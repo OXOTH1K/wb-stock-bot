@@ -65,7 +65,7 @@ INDEX_HTML = r"""<!doctype html>
     .chart-hit:focus{stroke:#087f5b;stroke-width:2}.chart-legend{display:flex;gap:20px;flex-wrap:wrap}.chart-legend span:first-child{color:#7c3aed}.chart-legend span:last-child{color:#087f5b}
     .analytics-summary .card span{display:block;color:var(--muted);font-size:13px;margin-bottom:8px}.analytics-summary .card strong{display:block;font-size:24px}
     .detail-toolbar{padding:18px}.lookup-form select{width:100%;min-height:40px}
-    .app-footer{text-align:center;color:var(--muted);font-size:12px;padding:22px 0 4px}
+    .app-footer{display:flex;justify-content:center;align-items:center;gap:10px;flex-wrap:wrap;text-align:center;color:var(--muted);font-size:12px;padding:22px 0 4px}
     .cost-editor{display:flex;gap:8px;align-items:end;flex-wrap:wrap;padding:0 18px 18px}.cost-editor label{display:grid;gap:6px}.cost-editor input{width:180px}
   </style>
 </head>
@@ -153,7 +153,10 @@ INDEX_HTML = r"""<!doctype html>
       <div id="unitBody" class="lookup-body" aria-live="polite"></div>
     </div>
   </section>
-  <footer class="app-footer">Текущая версия: <span id="appVersion">Загрузка…</span></footer>
+  <footer class="app-footer">Текущая версия: <span id="appVersion">Загрузка…</span>
+    <button class="btn" id="restartBotButton" type="button">Перезапустить бота</button>
+    <span id="restartBotStatus" aria-live="polite" hidden></span>
+  </footer>
 </div>
 
 <script>
@@ -527,6 +530,20 @@ async function installCRMUpdate() {
     button.disabled=false;
   } finally {clearTimeout(timeout);}
 }
+async function restartBotService() {
+  if(!window.confirm('Перезапустить сервис бота? Обработка заказов и синхронизация кратковременно остановятся.')) return;
+  const button=document.getElementById('restartBotButton');
+  const status=document.getElementById('restartBotStatus');
+  button.disabled=true;
+  status.hidden=false;
+  status.textContent='Передаю запрос на перезапуск…';
+  try {
+    const result=await api('/api/service/restart',{method:'POST',body:'{}'});
+    status.textContent=result.message;
+  } catch(e) {
+    status.textContent=e.message;
+  } finally {button.disabled=false;}
+}
 function renderInventory() {
   const q = document.getElementById('inventorySearch').value.trim().toLowerCase();
   const rows = inventoryRows.filter(x => !q || x.sku.toLowerCase().includes(q) || x.title.toLowerCase().includes(q));
@@ -577,6 +594,7 @@ async function setAvailable(sku, key) {
 
 document.getElementById('refreshButton').addEventListener('click', refreshView);
 document.getElementById('crmUpdateButton').addEventListener('click', installCRMUpdate);
+document.getElementById('restartBotButton').addEventListener('click', restartBotService);
 document.getElementById('crmCheckUpdatesButton').addEventListener('click', () => checkCRMUpdate(true));
 for (const view of ['inventory','lookup','fbw','analytics','unit']) document.getElementById(view+'Tab').addEventListener('click', () => showView(view));
 document.getElementById('inventoryBody').addEventListener('click', event => {

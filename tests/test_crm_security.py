@@ -79,7 +79,7 @@ class CRMSecurityHTTPTests(unittest.IsolatedAsyncioTestCase):
         before = self.db.conn.total_changes
         paths = ['/', '/healthz', '/api/session', '/api/inventory', '/api/inventory/movements',
                  '/api/wb/order-lookup?number=1', '/api/wb/fbw-orders', '/api/wb/sales-analytics', '/.env', '/.git/config',
-                 '/api/update', '/api/version', '/api/wb/unit-economics', '/api/wb/unit-cost', '/data/stocks.sqlite3', '/api/inventory/set', '/api/inventory/adjust', '/api/inventory/available/set']
+                 '/api/update', '/api/version', '/api/service/restart', '/api/wb/unit-economics', '/api/wb/unit-cost', '/data/stocks.sqlite3', '/api/inventory/set', '/api/inventory/adjust', '/api/inventory/available/set']
         for path in paths:
             for method in ('GET', 'POST', 'OPTIONS'):
                 response = await self.client.request(method, path, headers={'X-Forwarded-For': '127.0.0.1',
@@ -110,6 +110,27 @@ class CRMSecurityHTTPTests(unittest.IsolatedAsyncioTestCase):
                 '/api/wb/unit-cost', json={'sku': 'SKU', 'cost': '20'}, headers=headers
             )
             self.assertEqual(response.status, 403)
+
+    async def test_restart_endpoint_requires_csrf_and_queues_after_validation(self):
+        class FakeRestarter:
+            def __init__(self):
+                self.calls = 0
+
+            def trigger(self):
+                self.calls += 1
+                return True, 'Перезапуск запрошен.'
+
+        restarter = FakeRestarter()
+        self.crm.service_restarter = restarter
+        for headers in (auth(), auth() | {'X-CSRF-Token': 'wrong'},
+                        self.headers | {'Origin': 'https://evil.example'},
+                        self.headers | {'Sec-Fetch-Site': 'cross-site'}):
+            response = await self.client.post('/api/service/restart', json={}, headers=headers)
+            self.assertEqual(response.status, 403)
+        self.assertEqual(restarter.calls, 0)
+        response = await self.client.post('/api/service/restart', json={}, headers=self.headers)
+        self.assertEqual(response.status, 202)
+        self.assertEqual(restarter.calls, 1)
 
     async def test_update_routes_are_authenticated_and_fail_closed_when_not_configured(self):
         response = await self.client.get('/api/update', headers=self.headers)

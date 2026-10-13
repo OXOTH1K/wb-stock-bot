@@ -88,12 +88,29 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(checker.forced, [True])
 
+    async def test_restart_endpoint_queues_fixed_service_request(self):
+        class FakeRestarter:
+            def __init__(self):
+                self.calls = 0
+
+            def trigger(self):
+                self.calls += 1
+                return True, 'Запрос передан. Сервис бота перезапускается.'
+
+        restarter = FakeRestarter()
+        self.crm.service_restarter = restarter
+        response = await self.client.post('/api/service/restart', json={})
+        self.assertEqual(response.status, 202)
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.assertEqual((await response.json())['message'], 'Запрос передан. Сервис бота перезапускается.')
+        self.assertEqual(restarter.calls, 1)
+
     async def test_version_endpoint_reports_running_release_without_cache(self):
         response = await self.client.get("/api/version")
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
-        self.assertEqual(await response.json(), {"version": "1.0.9"})
+        self.assertEqual(await response.json(), {"version": "1.0.10"})
 
     async def test_unit_economics_endpoint_and_cost_save(self):
         class FakeAnalytics:
@@ -285,6 +302,8 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
     def test_inventory_and_lookup_ui_layout(self):
         self.assertIn('class="app-footer"', INDEX_HTML)
         self.assertIn('id="appVersion"', INDEX_HTML)
+        self.assertIn('id="restartBotButton"', INDEX_HTML)
+        self.assertIn("/api/service/restart", INDEX_HTML)
         self.assertIn("loadAppVersion();", INDEX_HTML)
         self.assertIn('id="unitView"', INDEX_HTML)
         self.assertIn('id="unitSku"', INDEX_HTML)
