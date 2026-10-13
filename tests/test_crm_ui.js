@@ -5,6 +5,8 @@ const vm = require('node:vm');
 const page = fs.readFileSync('app/crm_ui.py', 'utf8');
 assert.match(page,/а не число заказов из воронки WB/);
 assert.match(page,/Чистые выкупы/);
+assert.match(page,/>Выкупы WB<\/button>/);
+assert.match(page,/id="analyticsAllProducts" type="checkbox"/);
 const source = page.match(/<script>([\s\S]*?)<\/script>/)[1];
 const nodes = new Map();
 function element(id) {
@@ -215,6 +217,22 @@ assert.equal(element('inventorySearch').value, 'existing search');
   await vm.runInContext('loadAnalytics()',context);
   assert.match(element('analyticsBody').innerHTML, /<svg/);
   assert.ok(!element('analyticsSku').innerHTML.includes('<img'));
+
+  let allQuery='';
+  context.fetch=async url=>{
+    allQuery=String(url);
+    return {ok:true,text:async()=>JSON.stringify({...analytics,sku:'',all_products:true,product_count:2})};
+  };
+  element('analyticsAllProducts').checked=true;
+  element('analyticsAllProducts').listeners.change();
+  assert.equal(element('analyticsSku').disabled,true);
+  await vm.runInContext('loadAnalytics()',context);
+  assert.match(allQuery,/all=1/);
+  assert.match(allQuery,/sku=/);
+  assert.match(element('analyticsBody').innerHTML,/Все товары · артикулов с операциями: 2/);
+  element('analyticsAllProducts').checked=false;
+  element('analyticsAllProducts').listeners.change();
+  assert.equal(element('analyticsSku').disabled,false);
 
   // A malicious seller article must remain inert HTML data, never executable JS.
   element('inventorySearch').value = '';

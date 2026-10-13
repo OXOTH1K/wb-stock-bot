@@ -149,7 +149,7 @@ class WBSalesAnalytics:
         self.db.conn.execute('CREATE TABLE IF NOT EXISTS crm_finance_cache (period TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)')
         self.db.conn.commit()
 
-    def view(self, start, end, sku):
+    def view(self, start, end, sku, all_products=False):
         a, b = period(start, end)
         if len(sku) > 200 or any(ord(c) < 32 for c in sku):
             raise ValueError('Некорректный артикул.')
@@ -166,7 +166,24 @@ class WBSalesAnalytics:
         groups = json.loads(record[1]) if record else {}
         catalog = {p.vendor_code: p.title for p in self.products().values()}
         catalog.update({k: v['title'] for k, v in groups.items() if k})
-        selected = groups.get(sku, {}).get('days', {}) if sku else {}
+        chosen_groups = list(groups.values()) if all_products else ([groups[sku]] if sku in groups else [])
+        selected = {}
+        selected_costs = {}
+        selected_reasons = {}
+        for group in chosen_groups:
+            for day, values in group.get('days', {}).items():
+                total = selected.setdefault(day, [0, 0, Decimal(0)])
+                total[0] += values[0]
+                total[1] += values[1]
+                total[2] += Decimal(str(values[2]))
+            for day, values in group.get('costs', {}).items():
+                daily = selected_costs.setdefault(day, {name: Decimal(0) for name in COST_FIELDS})
+                for name in COST_FIELDS:
+                    daily[name] += Decimal(str(values.get(name, '0')))
+            for day, reasons in group.get('reasons', {}).items():
+                daily = selected_reasons.setdefault(day, {})
+                for reason, value in reasons.items():
+                    daily[reason] = daily.get(reason, Decimal(0)) + Decimal(str(value))
         points = []
         expenses_by_day = []
         totals = [0, 0, Decimal(0)]
@@ -174,19 +191,20 @@ class WBSalesAnalytics:
         reason_totals = {}
         for offset in range((b - a).days + 1):
             day = (a + timedelta(days=offset)).isoformat()
-            values = selected.get(day, [0, 0, '0'])
+            values = selected.get(day, [0, 0, Decimal(0)])
             sales, returns, credit = values[0], values[1], Decimal(values[2])
             points.append({'date': day, 'sales': sales, 'returns': returns, 'net': rub(credit)})
-            selected_costs = groups.get(sku, {}).get('costs', {}).get(day, {})
-            daily_costs = {name: Decimal(str(selected_costs.get(name, '0'))) for name in COST_FIELDS}
+            daily_costs = selected_costs.get(day, {name: Decimal(0) for name in COST_FIELDS})
             expenses_by_day.append({'date': day, **{name: rub(value) for name, value in daily_costs.items()}})
             for name, value in daily_costs.items():
                 expense_totals[name] += value
-            for reason, value in groups.get(sku, {}).get('reasons', {}).get(day, {}).items():
+            for reason, value in selected_reasons.get(day, {}).items():
                 reason_totals[reason] = reason_totals.get(reason, Decimal(0)) + Decimal(str(value))
             for i, value in enumerate((sales, returns, credit)):
                 totals[i] += value
-        return {'sku': sku, 'products': [{'sku': k, 'title': v} for k, v in sorted(catalog.items())],
+        return {'sku': sku, 'all_products': bool(all_products),
+                'product_count': sum(bool(group.get('days')) for group in chosen_groups),
+                'products': [{'sku': k, 'title': v} for k, v in sorted(catalog.items())],
                 'date_from': start, 'date_to': end, 'points': points if record else [],
                 'ready': bool(record), 'syncing': key in self.pending, 'error': error,
                 'stale': bool(record and now - record[0] > 3600),

@@ -50,6 +50,7 @@ INDEX_HTML = r"""<!doctype html>
     .order-link{border:0;background:none;padding:0;text-align:left;color:#6d28d9;text-decoration:underline;overflow-wrap:anywhere}
     .lookup-form{padding:18px;display:flex;gap:10px;align-items:end;flex-wrap:wrap}
     .lookup-form label{display:grid;gap:6px;flex:1;min-width:230px}.lookup-form input{width:100%}
+    .lookup-form .checkbox-label{display:flex;align-items:center;gap:8px;flex:0 0 auto;min-width:auto;padding:8px 2px}.lookup-form .checkbox-label input{width:auto}
     .lookup-body{padding:0 18px 18px}.lookup-card{border-top:1px solid var(--line);padding:20px 0}
     .lookup-card h3{margin:0 0 10px}.lookup-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
     .lookup-grid dt{font-size:12px;color:var(--muted)}.lookup-grid dd{margin:3px 0 0;overflow-wrap:anywhere}
@@ -83,7 +84,7 @@ INDEX_HTML = r"""<!doctype html>
     <button class="btn" id="inventoryTab" role="tab" aria-controls="inventoryView" aria-selected="true">Остатки</button>
     <button class="btn" id="lookupTab" role="tab" aria-controls="lookupView" aria-selected="false">Поиск заказа WB</button>
     <button class="btn" id="fbwTab" role="tab" aria-controls="fbwView" aria-selected="false">Заказы FBW</button>
-    <button class="btn" id="analyticsTab" role="tab" aria-controls="analyticsView" aria-selected="false">Продажи WB</button>
+    <button class="btn" id="analyticsTab" role="tab" aria-controls="analyticsView" aria-selected="false">Выкупы WB</button>
     <button class="btn" id="unitTab" role="tab" aria-controls="unitView" aria-selected="false">Юнит-экономика WB</button>
   </nav>
   <section id="inventoryView" role="tabpanel" aria-labelledby="inventoryTab">
@@ -126,9 +127,10 @@ INDEX_HTML = r"""<!doctype html>
   </section>
   <section id="analyticsView" role="tabpanel" aria-labelledby="analyticsTab" hidden>
     <div class="panel">
-      <div class="panel-head"><div><h2>Продажи и начисления WB</h2><div class="sub">Все продажи WB: FBW и FBS</div></div></div>
+      <div class="panel-head"><div><h2>Выкупы и начисления WB</h2><div class="sub">FBW и FBS</div></div></div>
       <form id="analyticsForm" class="lookup-form">
         <label for="analyticsSku">Артикул<select id="analyticsSku" class="search"><option value="">Выберите артикул</option></select></label>
+        <label class="checkbox-label" for="analyticsAllProducts"><input id="analyticsAllProducts" type="checkbox"> Все товары</label>
         <label for="analyticsDateFrom">С даты<input id="analyticsDateFrom" class="search" type="date" required></label>
         <label for="analyticsDateTo">По дату включительно<input id="analyticsDateTo" class="search" type="date" required></label>
         <button class="btn primary" type="submit">Показать график</button>
@@ -241,31 +243,35 @@ async function loadAnalytics(poll=false) {
   clearTimeout(analyticsTimer);
   const from = document.getElementById('analyticsDateFrom').value;
   const to = document.getElementById('analyticsDateTo').value;
-  const sku = document.getElementById('analyticsSku').value;
+  const allProducts = document.getElementById('analyticsAllProducts').checked;
+  const select = document.getElementById('analyticsSku');
+  select.disabled = allProducts;
+  const sku = allProducts ? '' : select.value;
   if (from > to) {setError('analyticsBody', 'Дата начала не должна быть позже даты окончания.'); return;}
   if (!poll) document.getElementById('analyticsBody').innerHTML = '<div class="spinner">Загружаю финансовый отчёт…</div>';
   try {
-    const data = await api('/api/wb/sales-analytics?'+new URLSearchParams({date_from:from,date_to:to,sku}));
+    const data = await api('/api/wb/sales-analytics?'+new URLSearchParams({date_from:from,date_to:to,sku,all:allProducts?'1':'0'}));
     if (sequence !== analyticsSequence) return;
-    const select = document.getElementById('analyticsSku');
     select.innerHTML = '<option value="">Выберите артикул</option>'+data.products.map(p => '<option value="'+esc(p.sku)+'">'+esc(p.sku)+' — '+esc(p.title)+'</option>').join('');
     select.value = sku;
+    select.disabled = allProducts;
     renderAnalytics(data);
     if (data.syncing && activeView === 'analytics') analyticsTimer = setTimeout(() => loadAnalytics(true), 5000);
   } catch(e) {if (sequence === analyticsSequence) setError('analyticsBody', e);}
 }
 function renderAnalytics(data) {
-  let html = '<p><strong>'+esc(data.date_from)+' — '+esc(data.date_to)+'</strong> · FBW и FBS · МСК</p>';
+  const scope = data.all_products ? 'Все товары'+(data.product_count ? ' · артикулов с операциями: '+data.product_count : '') : (data.sku ? 'Артикул: '+esc(data.sku) : '');
+  let html = '<p><strong>'+esc(data.date_from)+' — '+esc(data.date_to)+'</strong> · '+scope+' · FBW и FBS · МСК</p>';
   if (data.error) html += '<div class="notice">'+esc(data.error)+'</div>';
   if (data.syncing) html += '<p class="source-status">Финансовый отчёт загружается. Это может занять несколько минут; результат обновится автоматически.</p>';
   if (data.updated_at) html += '<p class="source-status">Загружено: '+esc(displayDate(data.updated_at))+(data.stale ? ' · сохранённые данные, требуется обновление' : '')+'</p>';
-  if (!data.sku) html += '<div class="empty">Выберите артикул товара.</div>';
+  if (!data.all_products && !data.sku) html += '<div class="empty">Выберите артикул или включите «Все товары».</div>';
   else if (!data.ready) html += '<div class="empty">Финансовые данные пока не получены. Нулевые значения не подставляются.</div>';
   else {
     html += '<div class="cards analytics-summary"><div class="card"><span>Выкуплено по фин. отчёту</span><strong>'+esc(data.totals.sales)+' шт.</strong></div>'+
       '<div class="card"><span>Возвраты</span><strong>'+esc(data.totals.returns)+' шт.</strong></div>'+
       '<div class="card"><span>К перечислению за товар</span><strong>'+esc(rubles(data.totals.net))+'</strong></div></div>';
-    if (!data.has_rows) html += '<div class="notice">В опубликованных отчётах за период нет операций по этому артикулу. Свежие продажи ещё могут не попасть в отчёт.</div>';
+    if (!data.has_rows) html += '<div class="notice">В опубликованных отчётах за период нет операций'+(data.all_products ? '' : ' по этому артикулу')+'. Свежие выкупы ещё могут не попасть в отчёт.</div>';
     html += salesChart(data.points);
     html += '<details><summary>Данные по дням</summary><div class="fbw-table-wrap"><table class="fbw-table"><thead><tr><th>Дата операции</th><th>Выкупы, шт.</th><th>Возвраты, шт.</th><th>К перечислению, ₽</th></tr></thead><tbody>'+
       data.points.map(p => '<tr><td>'+esc(p.date)+'</td><td>'+esc(p.sales)+'</td><td>'+esc(p.returns)+'</td><td>'+esc(rubles(p.net))+'</td></tr>').join('')+'<tr class="total-row"><th>Итого за период</th><td>'+esc(data.totals.sales)+'</td><td>'+esc(data.totals.returns)+'</td><td>'+esc(rubles(data.totals.net))+'</td></tr></tbody></table></div></details>';
@@ -585,6 +591,7 @@ document.getElementById('fbwBack').addEventListener('click', backToFbw);
 document.getElementById('analyticsDateFrom').value = moscowDay(29);
 document.getElementById('analyticsDateTo').value = moscowDay();
 document.getElementById('analyticsForm').addEventListener('submit', event => {event.preventDefault(); loadAnalytics();});
+document.getElementById('analyticsAllProducts').addEventListener('change', () => {document.getElementById('analyticsSku').disabled=document.getElementById('analyticsAllProducts').checked;clearTimeout(analyticsTimer);analyticsSequence++;document.getElementById('analyticsBody').innerHTML='<div class="empty">Нажмите «Показать график» для выбранных параметров.</div>';});
 document.getElementById('unitDateFrom').value = moscowDay(29);
 document.getElementById('unitDateTo').value = moscowDay();
 document.getElementById('unitForm').addEventListener('submit', event => {event.preventDefault(); loadUnitEconomics();});

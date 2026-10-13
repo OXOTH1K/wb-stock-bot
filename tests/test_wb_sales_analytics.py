@@ -108,6 +108,24 @@ class FinanceLoadingTests(unittest.IsolatedAsyncioTestCase):
         restarted = WBSalesAnalytics(self.wb, self.db, lambda: self.products)
         self.assertTrue(restarted.view('2026-09-20','2026-09-22','SKU')['ready'])
 
+    async def test_all_products_view_sums_every_sku_by_day_and_keeps_single_sku_view(self):
+        sale = row(quantity=1, forPay='100.00')
+        other_sale = row(2, vendorCode='OTHER', nmId=2, quantity=3, forPay='50.00')
+        self.wb._json.side_effect = [[sale, other_sale], None]
+        with patch('app.wb_sales_analytics.asyncio.sleep', new_callable=AsyncMock):
+            await self.service.refresh('2026-09-20', '2026-09-21')
+
+        all_view = self.service.view('2026-09-20', '2026-09-21', '', all_products=True)
+        self.assertTrue(all_view['all_products'])
+        self.assertEqual(all_view['product_count'], 2)
+        self.assertEqual(all_view['totals'], {'sales': 4, 'returns': 0, 'net': '150.00'})
+        self.assertEqual(all_view['points'][0], {
+            'date': '2026-09-20', 'sales': 4, 'returns': 0, 'net': '150.00'
+        })
+        self.assertEqual(self.service.view('2026-09-20', '2026-09-21', 'SKU')['totals'], {
+            'sales': 1, 'returns': 0, 'net': '100.00'
+        })
+
     async def test_unit_economics_persists_cost_and_calculates_profit_after_returns_and_fees(self):
         sale = row(quantity=2, forPay='200', deliveryService='10', paidStorage='2',
                    penalty='3', deduction='4', paidAcceptance='5',

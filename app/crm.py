@@ -157,7 +157,8 @@ class CRMServer:
             return web.json_response({"error": "Финансовые отчёты WB не подключены."}, status=503)
         try:
             data = self.sales_analytics.view(request.query.get('date_from', ''),
-                request.query.get('date_to', ''), request.query.get('sku', '').strip())
+                request.query.get('date_to', ''), request.query.get('sku', '').strip(),
+                all_products=request.query.get('all') == '1')
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response(data)

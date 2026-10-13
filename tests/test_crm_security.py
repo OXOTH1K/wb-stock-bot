@@ -181,3 +181,8 @@ class CRMSecurityHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(data['syncing'])
         self.assertEqual(data['points'], [])
         self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        response = await self.client.get('/api/wb/sales-analytics?date_from=2026-09-20&date_to=2026-09-21&all=1', headers=auth())
+        self.assertEqual(response.status, 200)
+        all_data = await response.json()
+        self.assertTrue(all_data['all_products'])
+        self.assertEqual(all_data['sku'], '')
