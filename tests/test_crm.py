@@ -12,6 +12,7 @@ from app.crm_ui import INDEX_HTML
 from app.db import StateDB
 from app.models import Product
 from app.wb_order_lookup import WBOrderLookup
+from app.version import APP_VERSION
 
 
 class FakeService:
@@ -123,7 +124,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
-        self.assertEqual(await response.json(), {"version": "1.0.11"})
+        self.assertEqual(await response.json(), {"version": APP_VERSION})
 
     async def test_unit_economics_endpoint_and_cost_save(self):
         class FakeAnalytics:

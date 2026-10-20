@@ -67,7 +67,7 @@ INDEX_HTML = r"""<!doctype html>
     .detail-toolbar{padding:18px}.lookup-form select{width:100%;min-height:40px}
     .app-footer{display:flex;justify-content:center;align-items:center;gap:10px;flex-wrap:wrap;text-align:center;color:var(--muted);font-size:12px;padding:22px 0 4px}
     .cost-editor{display:flex;gap:8px;align-items:end;flex-wrap:wrap;padding:0 18px 18px}.cost-editor label{display:grid;gap:6px}.cost-editor input{width:180px}
-    .top-sales-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:16px}.top-sales-grid .panel{box-shadow:none}.top-sales-grid table{min-width:0}.top-sales-grid .table-wrap{overflow:auto;max-height:65vh}.top-sales-grid h3{margin:0;font-size:15px}
+    .top-sales-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:16px;align-items:start}.top-sales-grid .panel{box-shadow:none;min-width:0}.top-sales-grid table{min-width:0;table-layout:fixed}.top-sales-grid .table-wrap{overflow:visible;max-height:none}.top-sales-grid h3{margin:0;font-size:15px}.top-sales-grid tbody tr{height:62px}.top-sales-grid th,.top-sales-grid td{padding:9px 10px}.top-sales-product{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.top-sales-product .sku{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     @media(max-width:800px){.top-sales-grid{grid-template-columns:1fr;padding:10px}.top-sales-grid .table-wrap{max-height:60vh}}
   </style>
 </head>
@@ -159,7 +159,7 @@ INDEX_HTML = r"""<!doctype html>
   <section id="topSalesView" role="tabpanel" aria-labelledby="topSalesTab" hidden>
     <div class="panel">
       <div class="panel-head"><div><h2>Топ заказов</h2><div class="sub">Заказанные штуки по дате оформления, включая склады продавца и маркетплейсов</div></div><div class="actions"><span id="topSalesUpdated" class="sub" aria-live="polite"></span><button class="btn primary" id="topSalesRefresh" type="button">Обновить топ</button></div></div>
-      <p class="lookup-help">Показываются первые 10 артикулов по количеству заказанных штук; число заказов — отдельный показатель. Учитываются заказы за последние 7 и 30 календарных дней по московскому времени. Отмены могут входить в число заказов, потому что ранжирование основано на факте оформления.</p>
+      <p class="lookup-help">Топ-10 артикулов по заказанному количеству. Выкуп WB считается по подтверждённым продажам из статистики, выкуп Ozon — по статусу отправления «delivered». Периоды — последние 7 и 30 календарных дней по московскому времени.</p>
       <div id="topSalesBody" aria-live="polite"><div class="spinner">Загрузка…</div></div>
     </div>
   </section>
@@ -267,7 +267,7 @@ function renderTopSales(data) {
     if(source.error)html+='<div class="notice" style="margin:12px">'+esc(source.error)+'</div>';
     if(!source.ready)html+='<div class="empty">'+(source.error?'Полные данные по заказам пока недоступны.':'Источник заказов ещё загружается.')+'</div>';
     else if(!source.items.length)html+='<div class="empty">За выбранный период в доступных данных заказов не найдено.</div>';
-    else html+='<div class="table-wrap"><table><thead><tr><th>№</th><th>Артикул / товар</th><th>Заказано, шт.</th><th>Заказов</th></tr></thead><tbody>'+source.items.map((item,index)=>'<tr><td>'+String(index+1)+'</td><td><strong>'+esc(item.sku)+'</strong><div class="sku">'+esc(item.title)+'</div></td><td class="qty">'+esc(item.quantity)+'</td><td>'+esc(item.orders)+'</td></tr>').join('')+'</tbody></table></div>';
+    else html+='<div class="table-wrap"><table><thead><tr><th style="width:42px">№</th><th>Артикул / товар</th><th style="width:105px">Заказано</th><th style="width:105px">Выкуплено</th></tr></thead><tbody>'+source.items.map((item,index)=>'<tr><td>'+String(index+1)+'</td><td class="top-sales-product" title="'+esc(item.title)+'"><strong>'+esc(item.sku)+'</strong><div class="sku">'+esc(item.title)+'</div></td><td class="qty">'+esc(item.quantity)+'</td><td class="qty">'+(item.buyouts===null?'—':esc(item.buyouts))+'</td></tr>').join('')+'</tbody></table></div>';
     return html+'</div>';
   };
   const section=(period, scope)=>'<p class="lookup-help"><strong>'+esc(period)+'</strong> · '+esc(scope.date_from)+' — '+esc(scope.date_to)+'</p><div class="top-sales-grid">'+table(period+' · Wildberries',scope.wb)+table(period+' · Ozon',scope.ozon)+'</div>';

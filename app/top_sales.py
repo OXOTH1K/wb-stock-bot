@@ -39,7 +39,7 @@ def _aggregate(items: dict, sku: str, title: str, order_id: str, quantity: int) 
 
 def _rank(items: dict) -> list[dict]:
     rows = [{'sku': row['sku'], 'title': row['title'], 'quantity': row['quantity'],
-             'orders': len(row['order_ids'])} for row in items.values()]
+             'orders': len(row['order_ids']), 'buyouts': 0} for row in items.values()]
     rows.sort(key=lambda row: (-row['quantity'], -row['orders'], row['sku'].casefold()))
     return rows[:10]
 
@@ -58,6 +58,7 @@ class TopSalesAnalytics:
 
     def _wb_orders(self, start: date, end: date) -> tuple[list[dict], str]:
         source = self.wb_sources.get('orders', {})
+        sales_source = self.wb_sources.get('sales', {})
         error = str(source.get('error') or '')
         updated_at = str(source.get('updated_at') or '')
         if not updated_at:
@@ -95,7 +96,48 @@ class TopSalesAnalytics:
             # srid identifies a product order; gNumber is a basket and can
             # contain multiple different products.
             _aggregate(selected, sku, title, str(link_id or record_id), quantity)
-        return _rank(selected), error
+        ranked = _rank(selected)
+        buyouts = self._wb_buyouts(start, end)
+        sales_ready = bool(sales_source.get('updated_at'))
+        sales_error = str(sales_source.get('error') or '')
+        if sales_error:
+            error = f'{error} {sales_error}'.strip()
+        elif not sales_ready:
+            error = f'{error} Архив выкупов WB ещё загружается.'.strip()
+        for row in ranked:
+            row['buyouts'] = buyouts.get(row['sku'], 0) if sales_ready else None
+        return ranked, error
+
+    def _wb_buyouts(self, start: date, end: date) -> dict[str, int]:
+        first = datetime.combine(start, datetime_time.min, MSK).astimezone(timezone.utc)
+        after_last = datetime.combine(end + timedelta(days=1), datetime_time.min, MSK).astimezone(timezone.utc)
+        totals: dict[str, int] = {}
+        for payload, in self.db.conn.execute(
+                "SELECT payload FROM wb_order_archive WHERE source='sales'"):
+            try:
+                row = json.loads(payload)
+            except (TypeError, ValueError):
+                continue
+            # WB marks confirmed sales with S and returned items with R.
+            if not str(row.get('saleID') or '').startswith('S'):
+                continue
+            when = event_time(str(row.get('date') or ''), report=True)
+            if not when:
+                continue
+            try:
+                timestamp = datetime.fromisoformat(when)
+            except ValueError:
+                continue
+            if not first <= timestamp < after_last:
+                continue
+            sku, _title = _product_key(row)
+            try:
+                quantity = int(row.get('quantity') or 1)
+            except (TypeError, ValueError):
+                quantity = 1
+            if sku and quantity > 0:
+                totals[sku] = totals.get(sku, 0) + quantity
+        return totals
 
     async def _ozon_orders(self, start: date, end: date) -> tuple[list[tuple[str, dict]], str]:
         if self.ozon_client is None:
@@ -124,6 +166,7 @@ class TopSalesAnalytics:
     @staticmethod
     def _ozon_rank(postings: list[tuple[str, dict]], start: date, end: date) -> list[dict]:
         selected: dict[str, dict] = {}
+        buyouts: dict[str, int] = {}
         first = datetime.combine(start, datetime_time.min, MSK).astimezone(timezone.utc)
         after_last = datetime.combine(end + timedelta(days=1), datetime_time.min, MSK).astimezone(timezone.utc)
         for model, posting in postings:
@@ -152,7 +195,12 @@ class TopSalesAnalytics:
                 _aggregate(selected, sku,
                            str(product.get('name') or product.get('product_name') or sku),
                            f'{model}:{posting_id}', quantity)
-        return _rank(selected)
+                if str(posting.get('status') or '').casefold() == 'delivered' and sku and quantity > 0:
+                    buyouts[sku] = buyouts.get(sku, 0) + quantity
+        ranked = _rank(selected)
+        for row in ranked:
+            row['buyouts'] = buyouts.get(row['sku'], 0)
+        return ranked
 
     async def view(self, force: bool = False) -> dict:
         if not force and self._cache is not None and time.monotonic() - self._cached_at < self.cache_seconds:
