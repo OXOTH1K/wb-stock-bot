@@ -546,6 +546,27 @@ class ParsingOzonClient(OzonClient):
 
 
 class OzonClientParsingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_top_sales_lists_all_fbs_and_fbo_postings_with_cursor_pagination(self):
+        from datetime import datetime, timezone
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        to = datetime(2026, 10, 20, tzinfo=timezone.utc)
+        client = ParsingOzonClient([
+            ('/v4/posting/fbs/list', {'postings': [{'posting_number': 'FBS-1'}],
+                                      'cursor': 'next', 'has_next': True}),
+            ('/v4/posting/fbs/list', {'postings': [{'posting_number': 'FBS-2'}],
+                                      'cursor': '', 'has_next': False}),
+            ('/v3/posting/fbo/list', {'result': {'postings': [{'posting_number': 'FBO-1'}],
+                                               'cursor': '', 'has_next': False}}),
+        ])
+        fbs = await client.list_order_postings('fbs', since, to)
+        fbo = await client.list_order_postings('fbo', since, to)
+        self.assertEqual([row['posting_number'] for row in fbs], ['FBS-1', 'FBS-2'])
+        self.assertEqual([row['posting_number'] for row in fbo], ['FBO-1'])
+        self.assertEqual([request[0] for request in client.requests], [
+            '/v4/posting/fbs/list', '/v4/posting/fbs/list', '/v3/posting/fbo/list'])
+        self.assertEqual(client.requests[1][1]['cursor'], 'next')
+        self.assertEqual(client.requests[0][1]['filter']['since'], '2026-10-01T00:00:00Z')
+
     async def test_stock_parser_uses_offer_id_and_fbs_present(self):
         client = ParsingOzonClient(
             [

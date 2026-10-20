@@ -78,7 +78,7 @@ class CRMSecurityHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_every_route_and_files_require_auth_and_no_forwarded_bypass(self):
         before = self.db.conn.total_changes
         paths = ['/', '/healthz', '/api/session', '/api/inventory', '/api/inventory/movements',
-                 '/api/wb/order-lookup?number=1', '/api/wb/fbw-orders', '/api/wb/sales-analytics', '/.env', '/.git/config',
+                 '/api/wb/order-lookup?number=1', '/api/wb/fbw-orders', '/api/wb/sales-analytics', '/api/top-sales', '/.env', '/.git/config',
                  '/api/update', '/api/version', '/api/service/restart', '/api/wb/unit-economics', '/api/wb/unit-cost', '/data/stocks.sqlite3', '/api/inventory/set', '/api/inventory/adjust', '/api/inventory/available/set']
         for path in paths:
             for method in ('GET', 'POST', 'OPTIONS'):

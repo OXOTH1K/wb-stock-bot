@@ -88,6 +88,19 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(checker.forced, [True])
 
+    async def test_top_sales_endpoint_returns_cached_marketplace_rankings(self):
+        class FakeTopSales:
+            async def view(self, force=False):
+                return {'week': {'wb': {'items': []}, 'ozon': {'items': []}},
+                        'month': {'wb': {'items': []}, 'ozon': {'items': []}},
+                        'updated_at': '2026-10-20T10:00:00Z', 'forced': force}
+
+        self.crm.top_sales = FakeTopSales()
+        response = await self.client.get('/api/top-sales?refresh=1')
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.assertTrue((await response.json())['forced'])
+
     async def test_restart_endpoint_queues_fixed_service_request(self):
         class FakeRestarter:
             def __init__(self):
@@ -110,7 +123,7 @@ class CRMTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
-        self.assertEqual(await response.json(), {"version": "1.0.10"})
+        self.assertEqual(await response.json(), {"version": "1.0.11"})
 
     async def test_unit_economics_endpoint_and_cost_save(self):
         class FakeAnalytics:

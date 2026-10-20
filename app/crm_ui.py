@@ -67,6 +67,8 @@ INDEX_HTML = r"""<!doctype html>
     .detail-toolbar{padding:18px}.lookup-form select{width:100%;min-height:40px}
     .app-footer{display:flex;justify-content:center;align-items:center;gap:10px;flex-wrap:wrap;text-align:center;color:var(--muted);font-size:12px;padding:22px 0 4px}
     .cost-editor{display:flex;gap:8px;align-items:end;flex-wrap:wrap;padding:0 18px 18px}.cost-editor label{display:grid;gap:6px}.cost-editor input{width:180px}
+    .top-sales-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:16px}.top-sales-grid .panel{box-shadow:none}.top-sales-grid table{min-width:0}.top-sales-grid .table-wrap{overflow:auto;max-height:65vh}.top-sales-grid h3{margin:0;font-size:15px}
+    @media(max-width:800px){.top-sales-grid{grid-template-columns:1fr;padding:10px}.top-sales-grid .table-wrap{max-height:60vh}}
   </style>
 </head>
 <body>
@@ -86,6 +88,7 @@ INDEX_HTML = r"""<!doctype html>
     <button class="btn" id="fbwTab" role="tab" aria-controls="fbwView" aria-selected="false">Заказы FBW</button>
     <button class="btn" id="analyticsTab" role="tab" aria-controls="analyticsView" aria-selected="false">Выкупы WB</button>
     <button class="btn" id="unitTab" role="tab" aria-controls="unitView" aria-selected="false">Юнит-экономика WB</button>
+    <button class="btn" id="topSalesTab" role="tab" aria-controls="topSalesView" aria-selected="false">Топ продаж</button>
   </nav>
   <section id="inventoryView" role="tabpanel" aria-labelledby="inventoryTab">
     <div id="inventoryCards" class="cards"></div>
@@ -153,6 +156,13 @@ INDEX_HTML = r"""<!doctype html>
       <div id="unitBody" class="lookup-body" aria-live="polite"></div>
     </div>
   </section>
+  <section id="topSalesView" role="tabpanel" aria-labelledby="topSalesTab" hidden>
+    <div class="panel">
+      <div class="panel-head"><div><h2>Топ заказов</h2><div class="sub">Заказанные штуки по дате оформления, включая склады продавца и маркетплейсов</div></div><div class="actions"><span id="topSalesUpdated" class="sub" aria-live="polite"></span><button class="btn primary" id="topSalesRefresh" type="button">Обновить топ</button></div></div>
+      <p class="lookup-help">Показываются первые 10 артикулов по количеству заказанных штук; число заказов — отдельный показатель. Учитываются заказы за последние 7 и 30 календарных дней по московскому времени. Отмены могут входить в число заказов, потому что ранжирование основано на факте оформления.</p>
+      <div id="topSalesBody" aria-live="polite"><div class="spinner">Загрузка…</div></div>
+    </div>
+  </section>
   <footer class="app-footer">Текущая версия: <span id="appVersion">Загрузка…</span>
     <button class="btn" id="restartBotButton" type="button">Перезапустить бота</button>
     <span id="restartBotStatus" aria-live="polite" hidden></span>
@@ -165,7 +175,7 @@ let activeView = 'inventory', lookupSequence = 0, lookupTimer = null;
 let fbwSequence = 0, fbwTimer = null, fbwNeedsPoll = false;
 function showView(view) {
   activeView = view;
-  for (const name of ['inventory','lookup','fbw','analytics','unit']) {
+  for (const name of ['inventory','lookup','fbw','analytics','unit','topSales']) {
     document.getElementById(name+'View').hidden = name !== view;
     document.getElementById(name+'Tab').setAttribute('aria-selected', String(name === view));
   }
@@ -181,12 +191,14 @@ function showView(view) {
   else {clearTimeout(analyticsTimer); analyticsSequence++;}
   if (view === 'unit') loadUnitEconomics();
   else {clearTimeout(unitTimer); unitSequence++;}
+  if (view === 'topSales') loadTopSales();
 }
 function refreshView() {
   if (activeView === 'inventory') loadInventory();
   else if (activeView === 'fbw') {if (fbwOrderNumber) openFbwOrder(fbwOrderNumber,true); else loadFbwOrders();}
   else if (activeView === 'analytics') loadAnalytics();
   else if (activeView === 'unit') loadUnitEconomics();
+  else if (activeView === 'topSales') loadTopSales(true);
   else lookupOrder();
 }
 function displayDate(value) {
@@ -239,6 +251,29 @@ function backToFbw() {
 }
 let analyticsSequence = 0, analyticsTimer = null;
 let unitSequence = 0, unitTimer = null;
+let topSalesSequence = 0;
+async function loadTopSales(force=false) {
+  const sequence=++topSalesSequence;
+  document.getElementById('topSalesBody').innerHTML='<div class="spinner">Считаю заказы…</div>';
+  try {
+    const data=await api('/api/top-sales'+(force?'?refresh=1':''));
+    if(sequence!==topSalesSequence)return;
+    renderTopSales(data);
+  } catch(e) {if(sequence===topSalesSequence)setError('topSalesBody',e);}
+}
+function renderTopSales(data) {
+  const table=(label, source)=>{
+    let html='<div class="panel"><div class="panel-head"><h3>'+esc(label)+'</h3></div>';
+    if(source.error)html+='<div class="notice" style="margin:12px">'+esc(source.error)+'</div>';
+    if(!source.ready)html+='<div class="empty">'+(source.error?'Полные данные по заказам пока недоступны.':'Источник заказов ещё загружается.')+'</div>';
+    else if(!source.items.length)html+='<div class="empty">За выбранный период в доступных данных заказов не найдено.</div>';
+    else html+='<div class="table-wrap"><table><thead><tr><th>№</th><th>Артикул / товар</th><th>Заказано, шт.</th><th>Заказов</th></tr></thead><tbody>'+source.items.map((item,index)=>'<tr><td>'+String(index+1)+'</td><td><strong>'+esc(item.sku)+'</strong><div class="sku">'+esc(item.title)+'</div></td><td class="qty">'+esc(item.quantity)+'</td><td>'+esc(item.orders)+'</td></tr>').join('')+'</tbody></table></div>';
+    return html+'</div>';
+  };
+  const section=(period, scope)=>'<p class="lookup-help"><strong>'+esc(period)+'</strong> · '+esc(scope.date_from)+' — '+esc(scope.date_to)+'</p><div class="top-sales-grid">'+table(period+' · Wildberries',scope.wb)+table(period+' · Ozon',scope.ozon)+'</div>';
+  document.getElementById('topSalesBody').innerHTML=section('За неделю',data.week)+section('За месяц',data.month);
+  document.getElementById('topSalesUpdated').textContent=data.updated_at?'Обновлено: '+displayDate(data.updated_at):'';
+}
 const rubles = value => Number(value).toLocaleString('ru-RU', {minimumFractionDigits:2, maximumFractionDigits:2})+' ₽';
 async function loadAnalytics(poll=false) {
   if (!document.getElementById('analyticsForm').reportValidity()) return;
@@ -596,7 +631,8 @@ document.getElementById('refreshButton').addEventListener('click', refreshView);
 document.getElementById('crmUpdateButton').addEventListener('click', installCRMUpdate);
 document.getElementById('restartBotButton').addEventListener('click', restartBotService);
 document.getElementById('crmCheckUpdatesButton').addEventListener('click', () => checkCRMUpdate(true));
-for (const view of ['inventory','lookup','fbw','analytics','unit']) document.getElementById(view+'Tab').addEventListener('click', () => showView(view));
+for (const view of ['inventory','lookup','fbw','analytics','unit','topSales']) document.getElementById(view+'Tab').addEventListener('click', () => showView(view));
+document.getElementById('topSalesRefresh').addEventListener('click',()=>loadTopSales(true));
 document.getElementById('inventoryBody').addEventListener('click', event => {
   const button = event.target.closest('button[data-stock-action]');
   if (!button) return;

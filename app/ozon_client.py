@@ -494,6 +494,48 @@ class OzonClient:
 
         return result
 
+    async def list_order_postings(self, model: str, since: datetime, to: datetime) -> list[dict]:
+        """List all FBS or FBO postings for a bounded order-created period."""
+        if model not in {'fbs', 'fbo'}:
+            raise ValueError('Unsupported Ozon posting model')
+        path = '/v4/posting/fbs/list' if model == 'fbs' else '/v3/posting/fbo/list'
+        cursor = ''
+        seen: set[str] = set()
+        result: list[dict] = []
+        for _page in range(1000):
+            payload = {
+                'sort_dir': 'asc',
+                'filter': {
+                    'since': since.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                    'to': to.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                },
+                'limit': 100,
+                'cursor': cursor,
+                'with': {
+                    'analytics_data': False,
+                    'barcodes': False,
+                    'financial_data': False,
+                    'legal_info': False,
+                },
+            }
+            data = await self._json(path, payload)
+            if not isinstance(data, dict):
+                raise OzonAPIError(200, f'invalid {model.upper()} posting list response')
+            container = data.get('result') if isinstance(data.get('result'), dict) else data
+            rows = container.get('postings', [])
+            if not isinstance(rows, list):
+                raise OzonAPIError(200, f'invalid {model.upper()} postings field')
+            result.extend(row for row in rows if isinstance(row, dict))
+            next_cursor = str(container.get('cursor') or data.get('cursor') or '')
+            has_next = bool(container.get('has_next', data.get('has_next', False)))
+            if not has_next:
+                return result
+            if not next_cursor or next_cursor == cursor or next_cursor in seen:
+                raise OzonAPIError(200, f'{model.upper()} posting pagination did not advance')
+            seen.add(next_cursor)
+            cursor = next_cursor
+        raise OzonAPIError(200, f'{model.upper()} posting pagination exceeded page limit')
+
     async def get_posting(self, posting_number: str) -> OzonPosting:
         data = await self._json(
             "/v3/posting/fbs/get",

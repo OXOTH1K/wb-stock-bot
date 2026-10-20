@@ -6,6 +6,8 @@ const page = fs.readFileSync('app/crm_ui.py', 'utf8');
 assert.match(page,/а не число заказов из воронки WB/);
 assert.match(page,/Чистые выкупы/);
 assert.match(page,/>Выкупы WB<\/button>/);
+assert.match(page,/>Топ продаж<\/button>/);
+assert.match(page,/id="topSalesRefresh"/);
 assert.match(page,/id="analyticsAllProducts" type="checkbox"/);
 assert.match(page,/id="restartBotButton"/);
 const source = page.match(/<script>([\s\S]*?)<\/script>/)[1];
@@ -42,6 +44,16 @@ assert.ok(!element('lookupBody').innerHTML.includes('<img'));
 assert.match(element('lookupBody').innerHTML, /&lt;img/);
 assert.match(element('lookupBody').innerHTML, /зафиксировано ботом/);
 assert.match(element('lookupBody').innerHTML, /Путь заказа/);
+context.result = {updated_at:'2026-10-20T10:00:00Z',
+  week:{date_from:'2026-10-14',date_to:'2026-10-20',
+    wb:{ready:true,items:[{sku:'SKU-A',title:malicious,quantity:12,orders:9}],error:''},
+    ozon:{ready:true,items:[],error:''}},
+  month:{date_from:'2026-09-21',date_to:'2026-10-20',
+    wb:{ready:true,items:[],error:''},ozon:{ready:false,items:[],error:'API error'}}};
+vm.runInContext('renderTopSales(result)',context);
+assert.ok(!element('topSalesBody').innerHTML.includes('<img'));
+assert.match(element('topSalesBody').innerHTML,/12/);
+assert.match(element('topSalesBody').innerHTML,/API error/);
 element('inventorySearch').value = 'existing search';
 vm.runInContext("showView('lookup')", context);
 assert.equal(element('inventoryView').hidden, true);

@@ -12,6 +12,7 @@ from .config import Settings
 from .crm_ui import INDEX_HTML
 from .crm_security import CRMAccessPolicy
 from .crm_restart import CRMServiceRestarter
+from .top_sales import TopSalesAnalytics
 from .crm_updates import CRMReleaseChecker
 from .db import StateDB
 from .service import StockMonitorService
@@ -36,6 +37,7 @@ class CRMServer:
         sales_analytics: WBSalesAnalytics | None = None,
         release_checker: CRMReleaseChecker | None = None,
         service_restarter: CRMServiceRestarter | None = None,
+        top_sales: TopSalesAnalytics | None = None,
     ):
         self.settings = settings
         self.service = service
@@ -45,6 +47,7 @@ class CRMServer:
         self.sales_analytics = sales_analytics
         self.release_checker = release_checker
         self.service_restarter = service_restarter or CRMServiceRestarter()
+        self.top_sales = top_sales
         self.security = CRMAccessPolicy(settings)
         try:
             self._allowed_networks = tuple(
@@ -88,6 +91,7 @@ class CRMServer:
                 web.get("/api/wb/fbw-orders", self.fbw_orders),
                 web.get("/api/wb/sales-analytics", self.wb_sales_analytics),
                 web.get("/api/wb/unit-economics", self.wb_unit_economics),
+                web.get("/api/top-sales", self.top_sales_view),
                 web.post("/api/wb/unit-cost", self.set_wb_unit_cost),
                 web.get("/api/update", self.update_status),
                 web.post("/api/update", self.start_update),
@@ -177,6 +181,18 @@ class CRMServer:
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    async def top_sales_view(self, request: web.Request) -> web.Response:
+        if self.top_sales is None:
+            return web.json_response({"error": "Топ заказов пока не подключён."}, status=503,
+                                     headers={"Cache-Control": "no-store"})
+        try:
+            data = await self.top_sales.view(force=request.query.get('refresh') == '1')
+        except Exception:
+            log.exception("Could not load marketplace top orders")
+            return web.json_response({"error": "Не удалось загрузить топ заказов."}, status=503,
+                                     headers={"Cache-Control": "no-store"})
         return web.json_response(data, headers={"Cache-Control": "no-store"})
 
     async def set_wb_unit_cost(self, request: web.Request) -> web.Response:

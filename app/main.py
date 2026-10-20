@@ -15,6 +15,7 @@ from .ozon_client import OzonClient
 from .service import StockMonitorService
 from .shared_inventory import SharedInventoryService
 from .telegram import TelegramBot
+from .top_sales import TopSalesAnalytics
 from .wb_client import WildberriesClient
 from .wb_order_lookup import WBOrderLookup
 from .wb_sales_analytics import WBSalesAnalytics
@@ -75,6 +76,7 @@ async def amain() -> None:
             )
 
             ozon: OzonIntegration | None = None
+            ozon_client: OzonClient | None = None
             if settings.ozon_client_id and settings.ozon_api_key:
                 ozon_client = await stack.enter_async_context(
                     OzonClient(
@@ -120,6 +122,8 @@ async def amain() -> None:
 
             order_lookup = WBOrderLookup(wb, db)
             sales_analytics = WBSalesAnalytics(wb, db, lambda: service.products, settings.wb_finance_token)
+            top_sales = TopSalesAnalytics(db, lambda: service.products, ozon_client,
+                                          wb_sources=order_lookup.sources)
             crm = CRMServer(
                 settings,
                 service,
@@ -128,6 +132,7 @@ async def amain() -> None:
                 order_lookup=order_lookup,
                 sales_analytics=sales_analytics,
                 release_checker=CRMReleaseChecker() if settings.crm_enabled else None,
+                top_sales=top_sales,
             )
             await crm.start()
 
