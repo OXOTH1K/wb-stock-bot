@@ -393,11 +393,17 @@ class OrderMonitor:
                 except Exception:
                     log.exception("Could not load supplies")
             for order in sorted(unseen, key=lambda o: (o.created_at, o.id)):
-                await self.tg.broadcast(
+                delivered = await self.tg.broadcast(
                     self.settings.telegram_chat_ids,
                     self._text(order, supplies),
                     reply_markup=self._keyboard(order, supplies),
                 )
+                if delivered is False:
+                    log.warning(
+                        "WB FBS order notification was not delivered; will retry: %s",
+                        order.id,
+                    )
+                    continue
                 self._remember(order)
 
         if membership_ok:
@@ -460,12 +466,19 @@ class OrderMonitor:
         if new_orders and self.inventory is not None:
             await self.inventory.consume_wb_orders(new_orders)
         for order in sorted(new_orders, key=lambda o: (o.created_at, o.id)):
-            await self.tg.broadcast(
+            delivered = await self.tg.broadcast(
                 self.settings.telegram_chat_ids,
                 "[[WB]] 🧭 WB-заказ найден при сверке после восстановления связи\n\n"
                 + self._text(order, supplies),
                 reply_markup=self._keyboard(order, supplies),
             )
+            if delivered is False:
+                log.warning(
+                    "Recovered WB FBS order notification was not delivered; "
+                    "will retry: %s",
+                    order.id,
+                )
+                continue
             self._remember(order)
             recovered_new += 1
 

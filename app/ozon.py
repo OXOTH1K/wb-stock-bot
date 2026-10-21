@@ -949,8 +949,8 @@ class OzonIntegration:
         )
         return "\n".join(lines)
 
-    async def _notify(self, posting: OzonPosting) -> None:
-        await self.tg.broadcast(
+    async def _notify(self, posting: OzonPosting) -> bool:
+        return await self.tg.broadcast(
             self.settings.telegram_chat_ids,
             self._text(posting),
             reply_markup=self._keyboard(posting),
@@ -974,7 +974,13 @@ class OzonIntegration:
             for sku in changed:
                 await self._notify_current_depletion(sku)
         for posting in unseen:
-            await self._notify(posting)
+            delivered = await self._notify(posting)
+            if delivered is False:
+                log.warning(
+                    "Ozon FBS order notification was not delivered; will retry: %s",
+                    posting.posting_number,
+                )
+                continue
             self._remember(posting.posting_number)
 
     async def audit_pending(self, chat_id: int) -> int:

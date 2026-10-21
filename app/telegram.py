@@ -285,14 +285,17 @@ class TelegramBot:
         *,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
+        delivered = True
         for chat_id in chat_ids:
             try:
                 await self.send_message(
                     chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup
                 )
             except Exception:
+                delivered = False
                 log.exception("Failed to send Telegram message to %s", chat_id)
+        return delivered
 
     async def polling_loop(
         self,

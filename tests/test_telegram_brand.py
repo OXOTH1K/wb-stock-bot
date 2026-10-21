@@ -4,6 +4,21 @@ from app.telegram import TelegramBot
 
 
 class BrandEmojiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_broadcast_reports_delivery_failures(self):
+        class RecordingTelegram(TelegramBot):
+            def __init__(self):
+                super().__init__("token")
+                self.calls = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.calls.append(chat_id)
+                if chat_id == 1:
+                    raise TimeoutError("temporary Telegram outage")
+
+        bot = RecordingTelegram()
+        self.assertFalse(await bot.broadcast([1, 2], "message"))
+        self.assertEqual(bot.calls, [1, 2])
+
     def test_plain_brand_tokens_build_custom_emoji_entities(self):
         bot = TelegramBot(
             "token",

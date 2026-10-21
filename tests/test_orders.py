@@ -14,9 +14,14 @@ class FakeTelegram:
         self.broadcasts = []
         self.edits = []
         self.sent = []
+        self.fail_broadcasts = 0
 
     async def broadcast(self, chat_ids, text, **kwargs):
         self.broadcasts.append((chat_ids, text, kwargs))
+        if self.fail_broadcasts:
+            self.fail_broadcasts -= 1
+            return False
+        return True
 
     async def edit_message_text(self, chat_id, message_id, text, **kwargs):
         self.edits.append((chat_id, message_id, text, kwargs))
@@ -152,6 +157,17 @@ class OrderTests(unittest.IsolatedAsyncioTestCase):
         await monitor.refresh()
         self.assertEqual(len(tg.broadcasts), 1)
         self.assertIn("Новый WB FBS-заказ", tg.broadcasts[0][1])
+
+    async def test_failed_new_order_notification_is_retried(self):
+        monitor, _, tg = self.monitor([self.row()], [])
+        tg.fail_broadcasts = 1
+
+        await monitor.refresh()
+        self.assertIsNone(monitor._state(501))
+
+        await monitor.refresh()
+        self.assertEqual(len(tg.broadcasts), 2)
+        self.assertEqual(monitor._state(501)[0], "notified")
 
     async def test_status_audit_reoffers_notified_but_unassigned_order(self):
         monitor, _, tg = self.monitor([self.row()], [])

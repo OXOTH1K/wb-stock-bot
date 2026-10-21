@@ -20,9 +20,14 @@ class FakeTelegram:
         self.broadcasts = []
         self.sent = []
         self.edits = []
+        self.fail_broadcasts = 0
 
     async def broadcast(self, chat_ids, text, **kwargs):
         self.broadcasts.append((chat_ids, text, kwargs))
+        if self.fail_broadcasts:
+            self.fail_broadcasts -= 1
+            return False
+        return True
 
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append((chat_id, text, kwargs))
@@ -456,6 +461,17 @@ class OzonIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         await self.ozon.refresh_orders()
         self.assertEqual(len(self.tg.broadcasts), 1)
+
+    async def test_failed_order_notification_is_retried(self):
+        self.tg.fail_broadcasts = 1
+
+        await self.ozon.refresh_orders()
+        posting_number = self.client.postings[0].posting_number
+        self.assertIsNone(self.ozon._state(posting_number))
+
+        await self.ozon.refresh_orders()
+        self.assertEqual(len(self.tg.broadcasts), 2)
+        self.assertEqual(self.ozon._state(posting_number), "notified")
 
     async def test_ship_callback_assembles_without_supply_and_is_idempotent(self):
         await self.ozon.initialize()
